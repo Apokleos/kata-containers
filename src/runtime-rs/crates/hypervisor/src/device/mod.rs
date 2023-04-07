@@ -4,34 +4,49 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
-mod block;
-pub use block::BlockConfig;
-mod network;
-pub use network::{Address, NetworkConfig};
-mod share_fs_device;
-pub use share_fs_device::ShareFsDeviceConfig;
-mod vfio;
-pub use vfio::{bind_device_to_host, bind_device_to_vfio, VfioBusMode, VfioConfig};
-mod share_fs_mount;
-pub use share_fs_mount::{ShareFsMountConfig, ShareFsMountType, ShareFsOperation};
-mod vsock;
-pub use vsock::{HybridVsockConfig, VsockConfig};
+use crate::Hypervisor;
+use async_trait::async_trait;
 
-use std::fmt;
+use self::device_type::{DeviceArgument, GenericConfig};
+mod blk_dev_manager;
+pub mod device_manager;
+pub mod device_type;
+mod vfio_dev_manager;
+mod vhost_dev_manager;
+use anyhow::Result;
 
-#[derive(Debug)]
-pub enum Device {
-    Block(BlockConfig),
-    Network(NetworkConfig),
-    ShareFsDevice(ShareFsDeviceConfig),
-    Vfio(VfioConfig),
-    ShareFsMount(ShareFsMountConfig),
-    Vsock(VsockConfig),
-    HybridVsock(HybridVsockConfig),
+#[derive(Debug, PartialEq, Eq, Hash, Clone)]
+pub enum DeviceType {
+    Block,
+    Network,
+    ShareFsDevice,
+    Vfio,
+    ShareFsMount,
+    Vsock,
+    HybridVsock,
+    Vhost,
+    Undefined,
 }
 
-impl fmt::Display for Device {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
-    }
+#[async_trait]
+pub trait DeviceManagerInner {
+    // try to add device
+    async fn try_add_device(
+        &mut self,
+        dev_info: &mut GenericConfig,
+        h: &dyn Hypervisor,
+        da: DeviceArgument,
+    ) -> Result<String>;
+    // try to remove device
+    async fn try_remove_device(
+        &mut self,
+        device_id: &str,
+        h: &dyn Hypervisor,
+    ) -> Result<Option<u64>>;
+    // get the device guest path
+    async fn get_device_guest_path(&self, id: &str) -> Option<String>;
+    // get the device vm path, it could be guest path or bdf path
+    async fn get_device_vm_path(&self, id: &str) -> Option<String>;
+    // get device manager driver options
+    async fn get_driver_options(&self) -> Result<String>;
 }

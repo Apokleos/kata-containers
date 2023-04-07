@@ -12,10 +12,11 @@ mod shm_volume;
 use async_trait::async_trait;
 
 use anyhow::{Context, Result};
+use hypervisor::device_manager::DeviceManager;
 use std::{sync::Arc, vec::Vec};
 use tokio::sync::RwLock;
 
-use crate::share_fs::ShareFs;
+use crate::{share_fs::ShareFs, volume::block_volume::is_block_volume};
 
 use self::hugepage::{get_huge_page_limits_map, get_huge_page_option};
 
@@ -48,22 +49,27 @@ impl VolumeResource {
         share_fs: &Option<Arc<dyn ShareFs>>,
         cid: &str,
         spec: &oci::Spec,
+        d: Arc<RwLock<DeviceManager>>,
+        sid: &str,
     ) -> Result<Vec<Arc<dyn Volume>>> {
         let mut volumes: Vec<Arc<dyn Volume>> = vec![];
         let oci_mounts = &spec.mounts;
+        info!(sl!(), " oci mount is : {:?}", oci_mounts.clone());
         // handle mounts
         for m in oci_mounts {
+            let read_only = m.options.iter().any(|opt| opt == "ro");
             let volume: Arc<dyn Volume> = if shm_volume::is_shim_volume(m) {
                 let shm_size = shm_volume::DEFAULT_SHM_SIZE;
                 Arc::new(
                     shm_volume::ShmVolume::new(m, shm_size)
                         .with_context(|| format!("new shm volume {:?}", m))?,
                 )
-            } else if share_fs_volume::is_share_fs_volume(m) {
+            } else if is_block_volume(m) {
+                // handle block volume
                 Arc::new(
-                    share_fs_volume::ShareFsVolume::new(share_fs, m, cid)
+                    block_volume::BlockVolume::new(Arc::clone(&d), m, read_only, cid, sid)
                         .await
-                        .with_context(|| format!("new share fs volume {:?}", m))?,
+                        .with_context(|| format!("new block volume {:?}", m))?,
                 )
             } else if let Some(options) =
                 get_huge_page_option(m).context("failed to check huge page")?
@@ -76,10 +82,11 @@ impl VolumeResource {
                     hugepage::Hugepage::new(m, hugepage_limits, options)
                         .with_context(|| format!("handle hugepages {:?}", m))?,
                 )
-            } else if block_volume::is_block_volume(m) {
+            } else if share_fs_volume::is_share_fs_volume(m) {
                 Arc::new(
-                    block_volume::BlockVolume::new(m)
-                        .with_context(|| format!("new block volume {:?}", m))?,
+                    share_fs_volume::ShareFsVolume::new(share_fs, m, cid, read_only)
+                        .await
+                        .with_context(|| format!("new share fs volume {:?}", m))?,
                 )
             } else if is_skip_volume(m) {
                 info!(sl!(), "skip volume {:?}", m);
