@@ -12,8 +12,12 @@ use anyhow::{anyhow, Context, Ok, Result};
 use async_trait::async_trait;
 
 use hypervisor::{
-    device::{device_manager::DeviceManager, DeviceConfig},
-    BlockConfig, Hypervisor,
+    device::{
+        device_manager::{do_handle_device, DeviceManager},
+        util::get_host_path,
+        DeviceConfig, DeviceType,
+    },
+    BlockConfig, Hypervisor, VfioConfig,
 };
 use kata_types::config::TomlConfig;
 use kata_types::mount::Mount;
@@ -266,42 +270,55 @@ impl ResourceManagerInner {
         for d in linux.devices.iter() {
             match d.r#type.as_str() {
                 "b" => {
-                    let device_info = DeviceConfig::BlockCfg(BlockConfig {
+                    let dev_info = DeviceConfig::BlockCfg(BlockConfig {
                         major: d.major,
                         minor: d.minor,
                         ..Default::default()
                     });
-                    let device_id = self
-                        .device_manager
-                        .write()
+                    let device_info = do_handle_device(&self.device_manager.clone(), &dev_info)
                         .await
-                        .new_device(&device_info)
-                        .await
-                        .context("failed to create deviec")?;
-
-                    self.device_manager
-                        .write()
-                        .await
-                        .try_add_device(&device_id)
-                        .await
-                        .context("failed to add deivce")?;
-
-                    // get complete device information
-                    let dev_info = self
-                        .device_manager
-                        .read()
-                        .await
-                        .get_device_info(&device_id)
-                        .await
-                        .context("failed to get device info")?;
+                        .context("do handle device")?;
 
                     // create agent device
-                    if let DeviceConfig::BlockCfg(config) = dev_info {
+                    if let DeviceType::Block(device) = device_info {
                         let agent_device = Device {
-                            id: device_id.clone(),
+                            id: device.config.virt_path.clone(),
                             container_path: d.path.clone(),
-                            field_type: config.driver_option,
-                            vm_path: config.virt_path,
+                            field_type: device.config.driver_option,
+                            vm_path: device.config.virt_path,
+                            ..Default::default()
+                        };
+                        devices.push(agent_device);
+                    }
+                }
+                "c" => {
+                    let host_path = get_host_path("c".to_owned(), d.major, d.minor)
+                        .context("get host path failed")?;
+                    let dev_info = DeviceConfig::VfioCfg(VfioConfig {
+                        host_path,
+                        dev_type: "c".to_string(),
+                        hostdev_prefix: "vfio_device".to_owned(),
+                        ..Default::default()
+                    });
+
+                    let device_info = do_handle_device(&self.device_manager.clone(), &dev_info)
+                        .await
+                        .context("do handle device")?;
+
+                    let vfio_mode = match self.toml_config.runtime.vfio_mode.as_str() {
+                        // VFIO devices appear as VFIO character devices under /dev/vfio in container.
+                        "vfio" => "vfio-pci".to_string(),
+                        // VFIO devices is managed by whatever driver in Guest kernel.
+                        _ => "vfio-pci-gk".to_string(),
+                    };
+
+                    // create agent device
+                    if let DeviceType::Vfio(device) = device_info {
+                        let agent_device = Device {
+                            id: device.device_id, // just for kata-agent
+                            container_path: d.path.clone(),
+                            field_type: vfio_mode,
+                            options: device.device_options,
                             ..Default::default()
                         };
                         devices.push(agent_device);

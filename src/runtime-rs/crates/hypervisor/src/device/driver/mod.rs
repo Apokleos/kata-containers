@@ -12,8 +12,11 @@ pub use virtio_blk::{
 };
 mod virtio_net;
 pub use virtio_net::{Address, NetworkConfig, NetworkDevice};
-mod vfio;
-pub use vfio::{bind_device_to_host, bind_device_to_vfio, VfioBusMode, VfioConfig, VfioDevice};
+pub mod vfio;
+pub use vfio::{
+    bind_device_to_host, bind_device_to_vfio, get_vfio_device, HostDevice, VfioBusMode, VfioConfig,
+    VfioDevice,
+};
 mod virtio_fs;
 pub use virtio_fs::{
     ShareFsDevice, ShareFsDeviceConfig, ShareFsMountConfig, ShareFsMountDevice, ShareFsMountType,
