@@ -14,7 +14,10 @@ use super::{share_fs_volume::generate_mount_path, Volume};
 use agent::Storage;
 use anyhow::{anyhow, Context};
 use hypervisor::{
-    device::{device_manager::DeviceManager, DeviceConfig},
+    device::{
+        device_manager::{do_handle_device, DeviceManager},
+        DeviceConfig, DeviceType,
+    },
     BlockConfig,
 };
 use nix::sys::stat::{self, SFlag};
@@ -48,19 +51,6 @@ impl BlockVolume {
             ..Default::default()
         };
 
-        let device_id = d
-            .write()
-            .await
-            .new_device(&DeviceConfig::BlockCfg(block_device_config.clone()))
-            .await
-            .context("failed to create deviec")?;
-
-        d.write()
-            .await
-            .try_add_device(device_id.as_str())
-            .await
-            .context("failed to add deivce")?;
-
         let file_name = Path::new(&m.source).file_name().unwrap().to_str().unwrap();
         let file_name = generate_mount_path(cid, file_name);
         let guest_path = do_get_guest_path(&file_name, cid, true, false);
@@ -68,20 +58,16 @@ impl BlockVolume {
         fs::create_dir_all(&host_path)
             .map_err(|e| anyhow!("failed to create rootfs dir {}: {:?}", host_path, e))?;
 
-        // get complete device information
-        let dev_info = d
-            .read()
-            .await
-            .get_device_info(&device_id)
-            .await
-            .context("failed to get device info")?;
+        let device_info =
+            do_handle_device(d, &DeviceConfig::BlockCfg(block_device_config.clone())).await?;
 
         // storage
         let mut storage = Storage::default();
-
-        if let DeviceConfig::BlockCfg(config) = dev_info {
-            storage.driver = config.driver_option;
-            storage.source = config.virt_path;
+        let mut device_id = String::new();
+        if let DeviceType::Block(device) = device_info {
+            storage.driver = device.config.driver_option;
+            storage.source = device.config.virt_path;
+            device_id = device.device_id;
         }
 
         storage.options = if read_only {
