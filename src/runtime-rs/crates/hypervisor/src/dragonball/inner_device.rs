@@ -10,7 +10,7 @@ use anyhow::{anyhow, Context, Result};
 use dbs_utils::net::MacAddr;
 use dragonball::api::v1::{
     BlockDeviceConfigInfo, FsDeviceConfigInfo, FsMountConfigInfo, VirtioNetDeviceConfigInfo,
-    VsockDeviceConfigInfo,
+    VsockDeviceConfigInfo, HostDeviceConfig, 
 };
 
 use super::DragonballInner;
@@ -118,25 +118,31 @@ impl DragonballInner {
             primary_device.hostdev_id,
             primary_device.bus_slot_func,
             bus_mode,
-            primary_device.guest_pci_path,
+            primary_device.guest_dev_id,
             vendor_device_id,
         );
 
-        // FIXME:
-        // interface implementation to be done when dragonball supports
-        // self.vmm_instance.insert_host_device(host_cfg)?;
+        let host_cfg = HostDeviceConfig {
+            hostdev_id: primary_device.hostdev_id,
+            sysfs_path: primary_device.sysfs_path,
+            bus_slot_func: primary_device.bus_slot_func,
+            mode: VfioBusMode::revert(vfio_device.bus_mode),
+            guest_dev_id: primary_device.guest_dev_id,
+            vendor_device_id,
+            ..Default::default()
+        };
+
+        self.vmm_instance
+            .insert_host_device(host_cfg)
+            .context("insert vfio device")?;
 
         Ok(())
     }
 
     fn remove_vfio_device(&mut self, hostdev_id: String) -> Result<()> {
-        info!(
-            sl!(),
-            "Mock for dragonball remove host_device with hostdev id {:?}", hostdev_id
-        );
-        // FIXME:
-        // interface implementation to be done when dragonball supports
-        // self.vmm_instance.remove_host_device(hostdev_id)?;
+        self.vmm_instance
+        .remove_host_device(hostdev_id)
+        .map_err(|e| anyhow!("put_host_device_by_id error {:?}", e))?;
 
         Ok(())
     }

@@ -18,6 +18,7 @@ use dragonball::{
         BlockDeviceConfigInfo, BootSourceConfig, FsDeviceConfigInfo, FsMountConfigInfo,
         InstanceInfo, InstanceState, VirtioNetDeviceConfigInfo, VmmAction, VmmActionError, VmmData,
         VmmRequest, VmmResponse, VmmService, VsockDeviceConfigInfo,
+        HostDeviceConfig,
     },
     vm::VmConfigInfo,
     Vmm,
@@ -190,6 +191,33 @@ impl VmmInstance {
             return Ok(vm_config);
         }
         Err(anyhow!("Failed to get machine info"))
+    }
+
+    pub fn insert_host_device(&self, host_device_cfg: HostDeviceConfig) -> Result<()> {
+        info!(sl!(), "insert host device {}", host_device_cfg.hostdev_id);
+        self.handle_request_with_retry(Request::Sync(VmmAction::InsertHostDevice(
+            host_device_cfg.clone(),
+        )))
+        .with_context(|| format!("Failed to insert host device {:?}", host_device_cfg))?;
+        info!(sl!(), "Do insert vfio device {} finished", host_device_cfg.hostdev_id);
+        Ok(())
+    }
+
+    pub fn remove_host_device(&self, hostdev_id: String) -> Result<()> {
+        info!(sl!(), "remove host device {}", hostdev_id);
+        self.handle_request_with_retry(Request::Sync(VmmAction::RemoveHostDevice(
+            hostdev_id.clone(),
+        )))
+        .map_err(|e| {
+            info!(
+                sl!(),
+                "Failed to remove host device {:?} err: {}", hostdev_id, e
+            );
+            std::process::exit(1)
+        })
+        .ok();
+        info!(sl!(), "Successfully remove vfio device {}", hostdev_id);
+        Ok(())
     }
 
     pub fn insert_block_device(&self, device_cfg: BlockDeviceConfigInfo) -> Result<()> {

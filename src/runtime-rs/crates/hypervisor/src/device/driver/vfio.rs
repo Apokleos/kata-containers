@@ -187,6 +187,7 @@ pub struct HostDevice {
 
     /// guest PCI path of device
     pub guest_pci_path: Option<PciPath>,
+    pub guest_dev_id: Option<u8>,
 
     /// vfio_vendor for vendor's some special cases.
     #[cfg(feature = "enable-vendor")]
@@ -455,6 +456,7 @@ impl VfioDevice {
         // <pcipath> is the device's PCI path in the guest
         if self.bus_mode == VfioBusMode::PCI {
             let pci_path = self.generate_guest_pci_path(dev_bdf.clone());
+            vfio_dev.guest_dev_id = Some(pci_path);
             vfio_dev.guest_pci_path = Some(PciPath::new(vec![pci_path]));
             self.device_options
                 .push(format!("0000:{}={}", dev_bdf, pci_path));
