@@ -108,6 +108,10 @@ impl CloudHypervisorInner {
         }
     }
 
+    pub(crate) async fn update_device(&mut self, _device: DeviceType) -> Result<()> {
+        Ok(())
+    }
+
     async fn handle_share_fs_device(&mut self, cfg: ShareFsDeviceConfig) -> Result<()> {
         if cfg.fs_type != VIRTIO_FS {
             return Err(anyhow!("cannot handle share fs type: {:?}", cfg.fs_type));
