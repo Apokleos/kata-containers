@@ -79,7 +79,7 @@ impl VolumeResource {
                 Arc::new(
                     block_volume::BlockVolume::new(d, m, read_only, cid, sid)
                         .await
-                        .with_context(|| format!("new share fs volume {:?}", m))?,
+                        .with_context(|| format!("new block volume {:?}", m))?,
                 )
             } else if is_vfio_volume(m) {
                 Arc::new(

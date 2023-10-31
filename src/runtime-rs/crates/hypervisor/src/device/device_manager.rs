@@ -12,8 +12,8 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::{
     vhost_user_blk::VhostUserBlkDevice, BlockConfig, BlockDevice, HybridVsockDevice, Hypervisor,
-    NetworkDevice, VfioDevice, VhostUserConfig, KATA_BLK_DEV_TYPE, KATA_MMIO_BLK_DEV_TYPE,
-    KATA_NVDIMM_DEV_TYPE, VIRTIO_BLOCK_MMIO, VIRTIO_BLOCK_PCI, VIRTIO_PMEM,
+    NetworkDevice, ShareFsDevice, VfioDevice, VhostUserConfig, KATA_BLK_DEV_TYPE,
+    KATA_MMIO_BLK_DEV_TYPE, KATA_NVDIMM_DEV_TYPE, VIRTIO_BLOCK_MMIO, VIRTIO_BLOCK_PCI, VIRTIO_PMEM,
 };
 
 use super::{
@@ -226,6 +226,11 @@ impl DeviceManager {
                         return Some(device_id.to_string());
                     }
                 }
+                DeviceType::ShareFs(device) => {
+                    if device.config.shared_path == host_path {
+                        return Some(device_id.to_string());
+                    }
+                }
                 _ => {
                     // TODO: support find other device type
                     continue;
@@ -323,6 +328,21 @@ impl DeviceManager {
             DeviceConfig::HybridVsockCfg(hvconfig) => {
                 // No need to do find device for hybrid vsock device.
                 Arc::new(Mutex::new(HybridVsockDevice::new(&device_id, hvconfig)))
+            }
+            DeviceConfig::ShareFsCfg(config) => {
+                // Try to find the sharefs device. If found, just return.
+                if let Some(device_id_matched) = self.find_device(config.shared_path.clone()).await
+                {
+                    info!(
+                        sl!(),
+                        "share-fs device with path:{:?} found, device id: {:?}",
+                        config.shared_path.clone(),
+                        device_id_matched
+                    );
+                    return Ok(device_id_matched);
+                }
+
+                Arc::new(Mutex::new(ShareFsDevice::new(&device_id, config)))
             }
             _ => {
                 return Err(anyhow!("invliad device type"));
@@ -436,6 +456,56 @@ impl DeviceManager {
 
         Err(anyhow!("ID are exhausted"))
     }
+
+    async fn try_update_device(&mut self, update_config: &DeviceConfig) -> Result<()> {
+        let device_id = match update_config {
+            DeviceConfig::ShareFsCfg(config) => {
+                // Try to find the sharefs device. If found, just return.
+                if let Some(target_id) = self.find_device(config.shared_path.clone()).await {
+                    target_id
+                } else {
+                    return Err(anyhow!(
+                        "no matching device was found to do the update operation"
+                    ));
+                }
+            }
+            // TODO for other Device Type
+            _ => {
+                return Err(anyhow!("update device with unsupported device type"));
+            }
+        };
+
+        // get the original device
+        let target_device = self
+            .get_device_info(&device_id)
+            .await
+            .context("get device failed")?;
+
+        // update device with the updated configuration.
+        let updated_device: ArcMutexDevice = match target_device {
+            DeviceType::ShareFs(mut device) => {
+                if let DeviceConfig::ShareFsCfg(config) = update_config {
+                    // update the mount_config.
+                    device.config.mount_config = config.mount_config.clone();
+                }
+                Arc::new(Mutex::new(device.clone()))
+            }
+            _ => return Err(anyhow!("update unsupported device type")),
+        };
+
+        // do handle update
+        let updating_device = updated_device.clone();
+        let mut device_guard = updating_device.lock().await;
+        if let Err(e) = device_guard.update(self.hypervisor.as_ref()).await {
+            debug!(sl!(), "update device with device id: {:?}", &device_id,);
+            return Err(e);
+        }
+
+        // Finally, we update the Map in Device Manager
+        self.devices.insert(device_id.clone(), updated_device);
+
+        Ok(())
+    }
 }
 
 // Many scenarios have similar steps when adding devices. so to reduce duplicated code,
@@ -469,6 +539,19 @@ pub async fn do_handle_device(
         .context("failed to get device info")?;
 
     Ok(device_info)
+}
+
+pub async fn do_update_device(
+    d: &RwLock<DeviceManager>,
+    update_config: &DeviceConfig,
+) -> Result<()> {
+    d.write()
+        .await
+        .try_update_device(update_config)
+        .await
+        .context("failed to update deivce")?;
+
+    Ok(())
 }
 
 pub async fn get_block_driver(d: &RwLock<DeviceManager>) -> String {

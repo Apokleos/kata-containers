@@ -19,7 +19,7 @@ use dragonball::{
 use super::DragonballInner;
 use crate::{
     device::DeviceType, HybridVsockConfig, NetworkConfig, ShareFsDeviceConfig, ShareFsMountConfig,
-    ShareFsMountType, ShareFsOperation, VfioBusMode, VfioDevice, VmmState, JAILER_ROOT,
+    ShareFsMountOpteration, ShareFsMountType, VfioBusMode, VfioDevice, VmmState, JAILER_ROOT,
 };
 
 const MB_TO_B: u32 = 1024 * 1024;
@@ -68,12 +68,11 @@ impl DragonballInner {
                 )
                 .context("add vhost user based block device"),
             DeviceType::HybridVsock(hvsock) => self.add_hvsock(&hvsock.config).context("add vsock"),
-            DeviceType::ShareFs(sharefs) => self
-                .add_share_fs_device(&sharefs.config)
-                .context("add share fs device"),
-            DeviceType::ShareFsMount(sharefs_mount) => self
-                .add_share_fs_mount(&sharefs_mount.config)
-                .context("add share fs mount"),
+            DeviceType::ShareFs(sharefs) => {
+                // It's safe to unwrap device config as device_config is always there.
+                self.add_share_fs_device(&sharefs.config.device_config.unwrap())
+                    .context("add share fs device")
+            }
             DeviceType::Vsock(_) => {
                 todo!()
             }
@@ -110,8 +109,14 @@ impl DragonballInner {
 
     pub(crate) async fn update_device(&mut self, device: DeviceType) -> Result<()> {
         info!(sl!(), "dragonball update device {:?}", &device);
-
-        Ok(())
+        match device {
+            DeviceType::ShareFs(sharefs_mount) => {
+                // It's safe to unwrap device config as device_config is always there.
+                self.add_share_fs_mount(&sharefs_mount.config.mount_config.unwrap())
+                    .context("update share-fs device with mount operation.")
+            }
+            _ => Err(anyhow!("unsupported device {:?} to update.", device)),
+        }
     }
 
     fn add_vfio_device(&mut self, device: &VfioDevice) -> Result<()> {
@@ -367,9 +372,9 @@ impl DragonballInner {
 
     fn add_share_fs_mount(&mut self, config: &ShareFsMountConfig) -> Result<()> {
         let ops = match config.op {
-            ShareFsOperation::Mount => "mount",
-            ShareFsOperation::Umount => "umount",
-            ShareFsOperation::Update => "update",
+            ShareFsMountOpteration::Mount => "mount",
+            ShareFsMountOpteration::Umount => "umount",
+            ShareFsMountOpteration::Update => "update",
         };
 
         let fstype = match config.fstype {

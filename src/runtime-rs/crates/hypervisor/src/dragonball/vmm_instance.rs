@@ -26,7 +26,7 @@ use nix::sched::{setns, CloneFlags};
 use seccompiler::BpfProgram;
 use vmm_sys_util::eventfd::EventFd;
 
-use crate::ShareFsOperation;
+use crate::ShareFsMountOpteration;
 
 pub enum Request {
     Sync(VmmAction),
@@ -238,7 +238,7 @@ impl VmmInstance {
         Ok(())
     }
 
-    pub fn patch_fs(&self, cfg: &FsMountConfigInfo, op: ShareFsOperation) -> Result<()> {
+    pub fn patch_fs(&self, cfg: &FsMountConfigInfo, op: ShareFsMountOpteration) -> Result<()> {
         self.handle_request(Request::Sync(VmmAction::ManipulateFsBackendFs(cfg.clone())))
             .with_context(|| {
                 format!(

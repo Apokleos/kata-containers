@@ -75,7 +75,11 @@ impl CloudHypervisorInner {
 
     async fn handle_add_device(&mut self, device: DeviceType) -> Result<()> {
         match device {
-            DeviceType::ShareFs(sharefs) => self.handle_share_fs_device(sharefs.config).await,
+            DeviceType::ShareFs(sharefs) => {
+                // It's safe to unwrap as device_config is always there.
+                self.handle_share_fs_device(sharefs.config.device_config.unwrap())
+                    .await
+            }
             DeviceType::HybridVsock(hvsock) => self.handle_hvsock_device(&hvsock.config).await,
             DeviceType::Block(block) => self.handle_block_device(block).await,
             DeviceType::Vfio(vfiodev) => self.handle_vfio_device(&vfiodev).await,
@@ -290,7 +294,11 @@ impl CloudHypervisorInner {
         while let Some(dev) = self.pending_devices.pop() {
             match dev {
                 DeviceType::ShareFs(dev) => {
-                    let settings = ShareFsSettings::new(dev.config, self.vm_path.clone());
+                    // It's safe to unwrap as device_config is always there.
+                    let settings = ShareFsSettings::new(
+                        dev.config.device_config.unwrap(),
+                        self.vm_path.clone(),
+                    );
 
                     let fs_cfg = FsConfig::try_from(settings)?;
 
