@@ -9,21 +9,23 @@ use async_trait::async_trait;
 
 use crate::device::{hypervisor, Device, DeviceType};
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, Default)]
 pub enum ShareFsMountOpteration {
+    #[default]
     Mount,
     Umount,
     Update,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone)]
 pub enum ShareFsMountType {
+    #[default]
     PASSTHROUGH,
     RAFS,
 }
 
 /// ShareFsMountConfig: share fs mount config
-#[derive(Debug, Clone)]
+#[derive(Clone, Debug, Default)]
 pub struct ShareFsMountConfig {
     /// source: the passthrough fs exported dir or rafs meta file of rafs
     pub source: String,
@@ -48,8 +50,11 @@ pub struct ShareFsMountConfig {
 }
 
 /// ShareFsDeviceConfig: share fs device config
-#[derive(Debug, Clone)]
-pub struct ShareFsDeviceConfig {
+#[derive(Clone, Debug, Default)]
+pub struct ShareFsConfig {
+    /// shared_path: the upperdir of the passthrough fs exported dir or rafs meta file of rafs
+    pub shared_path: String,
+
     /// fs_type: virtiofs or inline-virtiofs
     pub fs_type: String,
 
@@ -59,9 +64,6 @@ pub struct ShareFsDeviceConfig {
     /// mount_tag: a label used as a hint to the guest.
     pub mount_tag: String,
 
-    /// host_path: the host filesystem path for this volume.
-    pub host_path: String,
-
     /// queue_size: queue size
     pub queue_size: u64,
 
@@ -70,21 +72,12 @@ pub struct ShareFsDeviceConfig {
 
     /// options: virtiofs device's config options.
     pub options: Vec<String>,
-}
-
-#[derive(Clone, Debug)]
-pub struct ShareFsConfig {
-    /// shared_path: the upperdir of the passthrough fs exported dir or rafs meta file of rafs
-    pub shared_path: String,
-
-    /// device config for sharefs device
-    pub device_config: Option<ShareFsDeviceConfig>,
 
     /// mount config for sharefs mount/umount/update
     pub mount_config: Option<ShareFsMountConfig>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct ShareFsDevice {
     /// device id for sharefs device in device manager
     pub device_id: String,

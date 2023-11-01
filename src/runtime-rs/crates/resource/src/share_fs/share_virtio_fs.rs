@@ -16,7 +16,7 @@ use hypervisor::{
         driver::{ShareFsMountConfig, ShareFsMountOpteration, ShareFsMountType},
         DeviceConfig,
     },
-    ShareFsConfig, ShareFsDeviceConfig,
+    ShareFsConfig,
 };
 use kata_sys_util::mount;
 
@@ -49,19 +49,14 @@ pub(crate) async fn prepare_virtiofs(
     mount::bind_mount_unchecked(&host_rw_dest, &host_ro_dest, true, MsFlags::MS_SLAVE)
         .context("bind mount shared_fs directory")?;
 
-    let device_config = ShareFsDeviceConfig {
+    let sharefs_config = ShareFsConfig {
+        shared_path: host_ro_dest.display().to_string(),
         sock_path: generate_sock_path(root),
         mount_tag: String::from(MOUNT_GUEST_TAG),
-        host_path: host_ro_dest.display().to_string(),
         fs_type: fs_type.to_string(),
         queue_size: 0,
         queue_num: 0,
         options: vec![],
-    };
-
-    let sharefs_config = ShareFsConfig {
-        shared_path: host_ro_dest.display().to_string(),
-        device_config: Some(device_config),
         mount_config: None,
     };
 
@@ -101,7 +96,7 @@ pub(crate) async fn setup_inline_virtiofs(d: &RwLock<DeviceManager>, id: &str) -
     let sharefs_config = ShareFsConfig {
         shared_path: host_ro_shared_path.display().to_string(),
         mount_config: Some(virtiofs_mount),
-        device_config: None,
+        ..Default::default()
     };
 
     // update virtio-fs device with ShareFsMountConfig
@@ -139,7 +134,7 @@ pub async fn rafs_mount(
     let sharefs_config = ShareFsConfig {
         shared_path,
         mount_config: Some(rafs_config),
-        device_config: None,
+        ..Default::default()
     };
 
     // update virtio-fs device with ShareFsMountConfig

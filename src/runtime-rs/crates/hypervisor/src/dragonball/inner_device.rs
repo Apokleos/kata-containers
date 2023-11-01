@@ -18,7 +18,7 @@ use dragonball::{
 
 use super::DragonballInner;
 use crate::{
-    device::DeviceType, HybridVsockConfig, NetworkConfig, ShareFsDeviceConfig, ShareFsMountConfig,
+    device::DeviceType, HybridVsockConfig, NetworkConfig, ShareFsConfig, ShareFsMountConfig,
     ShareFsMountOpteration, ShareFsMountType, VfioBusMode, VfioDevice, VmmState, JAILER_ROOT,
 };
 
@@ -70,7 +70,7 @@ impl DragonballInner {
             DeviceType::HybridVsock(hvsock) => self.add_hvsock(&hvsock.config).context("add vsock"),
             DeviceType::ShareFs(sharefs) => {
                 // It's safe to unwrap device config as device_config is always there.
-                self.add_share_fs_device(&sharefs.config.device_config.unwrap())
+                self.add_share_fs_device(&sharefs.config)
                     .context("add share fs device")
             }
             DeviceType::Vsock(_) => {
@@ -320,7 +320,7 @@ impl DragonballInner {
         Ok(())
     }
 
-    fn add_share_fs_device(&self, config: &ShareFsDeviceConfig) -> Result<()> {
+    fn add_share_fs_device(&self, config: &ShareFsConfig) -> Result<()> {
         let mut fs_cfg = FsDeviceConfigInfo {
             sock_path: config.sock_path.clone(),
             tag: config.mount_tag.clone(),

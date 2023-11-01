@@ -9,7 +9,7 @@ use crate::device::DeviceType;
 use crate::BlockDevice;
 use crate::HybridVsockConfig;
 use crate::NetworkConfig;
-use crate::ShareFsDeviceConfig;
+use crate::ShareFsConfig;
 use crate::VfioDevice;
 use crate::VmmState;
 use anyhow::{anyhow, Context, Result};
@@ -77,8 +77,7 @@ impl CloudHypervisorInner {
         match device {
             DeviceType::ShareFs(sharefs) => {
                 // It's safe to unwrap as device_config is always there.
-                self.handle_share_fs_device(sharefs.config.device_config.unwrap())
-                    .await
+                self.handle_share_fs_device(sharefs.config).await
             }
             DeviceType::HybridVsock(hvsock) => self.handle_hvsock_device(&hvsock.config).await,
             DeviceType::Block(block) => self.handle_block_device(block).await,
@@ -116,7 +115,7 @@ impl CloudHypervisorInner {
         Ok(())
     }
 
-    async fn handle_share_fs_device(&mut self, cfg: ShareFsDeviceConfig) -> Result<()> {
+    async fn handle_share_fs_device(&mut self, cfg: ShareFsConfig) -> Result<()> {
         if cfg.fs_type != VIRTIO_FS {
             return Err(anyhow!("cannot handle share fs type: {:?}", cfg.fs_type));
         }
@@ -295,10 +294,7 @@ impl CloudHypervisorInner {
             match dev {
                 DeviceType::ShareFs(dev) => {
                     // It's safe to unwrap as device_config is always there.
-                    let settings = ShareFsSettings::new(
-                        dev.config.device_config.unwrap(),
-                        self.vm_path.clone(),
-                    );
+                    let settings = ShareFsSettings::new(dev.config, self.vm_path.clone());
 
                     let fs_cfg = FsConfig::try_from(settings)?;
 
@@ -338,12 +334,12 @@ impl TryFrom<NetworkConfig> for NetConfig {
 }
 #[derive(Debug)]
 pub struct ShareFsSettings {
-    cfg: ShareFsDeviceConfig,
+    cfg: ShareFsConfig,
     vm_path: String,
 }
 
 impl ShareFsSettings {
-    pub fn new(cfg: ShareFsDeviceConfig, vm_path: String) -> Self {
+    pub fn new(cfg: ShareFsConfig, vm_path: String) -> Self {
         ShareFsSettings { cfg, vm_path }
     }
 }
