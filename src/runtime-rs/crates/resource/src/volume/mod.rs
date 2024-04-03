@@ -12,8 +12,10 @@ mod shm_volume;
 pub mod utils;
 
 pub mod direct_volume;
-use crate::volume::direct_volume::is_direct_volume;
+use crate::volume::{direct_volume::is_direct_volume, guest_volume::is_guest_volume};
 pub mod direct_volumes;
+
+pub mod guest_volume;
 
 use std::{sync::Arc, vec::Vec};
 
@@ -71,6 +73,11 @@ impl VolumeResource {
                 Arc::new(
                     shm_volume::ShmVolume::new(m, shm_size)
                         .with_context(|| format!("new shm volume {:?}", m))?,
+                )
+            } else if is_guest_volume(m) {
+                info!(sl!(), "guest volume {:?}", m);
+                Arc::new(guest_volume::GuestVolume::new(m)
+                    .with_context(|| format!("new guest volume {:?}", m))?,
                 )
             } else if is_block_volume(m) {
                 // handle block volume
