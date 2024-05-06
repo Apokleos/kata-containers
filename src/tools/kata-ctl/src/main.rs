@@ -12,12 +12,14 @@ extern crate slog;
 mod arch;
 mod args;
 mod check;
+mod gpu_driver;
 mod log_parser;
 mod monitor;
 mod ops;
 mod types;
 mod utils;
 
+use crate::gpu_driver::gpu_driver_dump;
 use crate::log_parser::log_parser;
 use anyhow::Result;
 use args::{Commands, KataCtlCli};
@@ -65,6 +67,7 @@ fn real_main() -> Result<()> {
         match command {
             Commands::Check(args) => handle_check(args),
             Commands::DirectVolume(args) => handle_direct_volume(args),
+            Commands::Gpu(args) => gpu_driver_dump(args),
             Commands::Exec(args) => handle_exec(args),
             Commands::Env(args) => handle_env(args),
             Commands::Factory => handle_factory(),

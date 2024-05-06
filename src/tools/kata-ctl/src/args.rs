@@ -75,6 +75,9 @@ pub enum Commands {
 
     /// Parse Logs and output in various formats
     LogParser(LogParser),
+
+    /// GPU Driver Info dump
+    Gpu(GpuDriverCommand),
 }
 
 #[derive(Debug, Args, Error)]
@@ -149,6 +152,34 @@ pub struct MonitorArgument {
 pub struct DirectVolumeCommand {
     #[clap(subcommand)]
     pub directvol_cmd: DirectVolSubcommand,
+}
+
+#[derive(Debug, Args)]
+pub struct GpuDriverCommand {
+    #[clap(subcommand)]
+    pub gpudriver_cmd: GpuDriverSubCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum GpuDriverSubCommand {
+    /// Generate GPU Driver list including execuatable bins and dynamic libs etc.
+    GenCfg(GpuDriverConfig),
+
+    /// Generate GPU Driver CDI config
+    GenCdi(GpuDriverGenCdi),
+}
+
+#[derive(Debug, Args)]
+pub struct GpuDriverConfig {
+    pub driver_path: String,
+    pub template_path: String,
+}
+
+#[derive(Debug, Args)]
+pub struct GpuDriverGenCdi {
+    pub driver_path: String,
+    pub template_path: String,
+    pub config_name: String,
 }
 
 #[derive(Debug, Subcommand)]

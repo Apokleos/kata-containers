@@ -1,0 +1,393 @@
+---
+cdiVersion: 0.5.0
+containerEdits:
+  # deviceNodes:
+  # - path: /dev/nvidia-modeset
+  # - path: /dev/nvidia-uvm
+  # - path: /dev/nvidiactl
+  # env:
+  # - NVIDIA_VISIBLE_DEVICES=void
+  env:
+  - LD_PRELOAD=/usr/lib64/libnvidia-ml.so.535.54.03
+  # hooks:
+  # - args:
+  #   - nvidia-ctk
+  #   - hook
+  #   - update-ldcache
+  #   - --folder
+  #   - /usr/lib64
+  #   hookName: createContainer
+  #   path: /usr/bin/nvidia-ctk
+  mounts:
+    #- containerPath: /run/nvidia-persistenced/socket
+    #  hostPath: /run/nvidia-persistenced/socket
+    #  type: bind
+    #  options:
+    #  - ro
+    #  - nosuid
+    #  - nodev
+    #  - bind
+    #  - noexec
+  - containerPath: /usr/bin/nvidia-cuda-mps-control
+    hostPath: /root/tesla/535.54.03/nvidia-cuda-mps-control
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/bin/nvidia-cuda-mps-server
+    hostPath: /root/tesla/535.54.03/nvidia-cuda-mps-server
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/bin/nvidia-debugdump
+    hostPath: /root/tesla/535.54.03/nvidia-debugdump
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/bin/nvidia-persistenced
+    hostPath: /root/tesla/535.54.03/nvidia-persistenced
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/bin/nvidia-smi
+    hostPath: /root/tesla/535.54.03/nvidia-smi
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /etc/vulkan/implicit_layer.d/nvidia_layers.json
+    hostPath: /root/tesla/535.54.03/nvidia_layers.json
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/lib64/libEGL_nvidia.so.535.54.03
+    hostPath: /root/tesla/535.54.03/libEGL_nvidia.so.535.54.03
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/lib64/libGLESv1_CM_nvidia.so.535.54.03
+    hostPath: /root/tesla/535.54.03/libGLESv1_CM_nvidia.so.535.54.03
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/lib64/libGLESv2_nvidia.so.535.54.03
+    hostPath: /root/tesla/535.54.03/libGLESv2_nvidia.so.535.54.03
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/lib64/libGLX_nvidia.so.535.54.03
+    hostPath: /root/tesla/535.54.03/libGLX_nvidia.so.535.54.03
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/lib64/libcuda.so.535.54.03
+    hostPath: /root/tesla/535.54.03/libcuda.so.535.54.03
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/lib64/libcudadebugger.so.535.54.03
+    hostPath: /root/tesla/535.54.03/libcudadebugger.so.535.54.03
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/lib64/libnvcuvid.so.535.54.03
+    hostPath: /root/tesla/535.54.03/libnvcuvid.so.535.54.03
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/lib64/libnvidia-allocator.so.535.54.03
+    hostPath: /root/tesla/535.54.03/libnvidia-allocator.so.535.54.03
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/lib64/libnvidia-cfg.so.535.54.03
+    hostPath: /root/tesla/535.54.03/libnvidia-cfg.so.535.54.03
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/lib64/libnvidia-egl-gbm.so.1.1.0
+    hostPath: /root/tesla/535.54.03/libnvidia-egl-gbm.so.1.1.0
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/lib64/libnvidia-eglcore.so.535.54.03
+    hostPath: /root/tesla/535.54.03/libnvidia-eglcore.so.535.54.03
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/lib64/libnvidia-encode.so.535.54.03
+    hostPath: /root/tesla/535.54.03/libnvidia-encode.so.535.54.03
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/lib64/libnvidia-fbc.so.535.54.03
+    hostPath: /root/tesla/535.54.03/libnvidia-fbc.so.535.54.03
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/lib64/libnvidia-glcore.so.535.54.03
+    hostPath: /root/tesla/535.54.03/libnvidia-glcore.so.535.54.03
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/lib64/libnvidia-glsi.so.535.54.03
+    hostPath: /root/tesla/535.54.03/libnvidia-glsi.so.535.54.03
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/lib64/libnvidia-glvkspirv.so.535.54.03
+    hostPath: /root/tesla/535.54.03/libnvidia-glvkspirv.so.535.54.03
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/lib64/libnvidia-gtk2.so.535.54.03
+    hostPath: /root/tesla/535.54.03/libnvidia-gtk2.so.535.54.03
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/lib64/libnvidia-gtk3.so.535.54.03
+    hostPath: /root/tesla/535.54.03/libnvidia-gtk3.so.535.54.03
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/lib64/libnvidia-ml.so.535.54.03
+    hostPath: /root/tesla/535.54.03/libnvidia-ml.so.535.54.03
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/lib64/libnvidia-ngx.so.535.54.03
+    hostPath: /root/tesla/535.54.03/libnvidia-ngx.so.535.54.03
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/lib64/libnvidia-nvvm.so.535.54.03
+    hostPath: /root/tesla/535.54.03/libnvidia-nvvm.so.535.54.03
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/lib64/libnvidia-opencl.so.535.54.03
+    hostPath: /root/tesla/535.54.03/libnvidia-opencl.so.535.54.03
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/lib64/libnvidia-opticalflow.so.535.54.03
+    hostPath: /root/tesla/535.54.03/libnvidia-opticalflow.so.535.54.03
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/lib64/libnvidia-pkcs11-openssl3.so.535.54.03
+    hostPath: /root/tesla/535.54.03/libnvidia-pkcs11-openssl3.so.535.54.03
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/lib64/libnvidia-pkcs11.so.535.54.03
+    hostPath: /root/tesla/535.54.03/libnvidia-pkcs11.so.535.54.03
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/lib64/libnvidia-ptxjitcompiler.so.535.54.03
+    hostPath: /root/tesla/535.54.03/libnvidia-ptxjitcompiler.so.535.54.03
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/lib64/libnvidia-rtcore.so.535.54.03
+    hostPath: /root/tesla/535.54.03/libnvidia-rtcore.so.535.54.03
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/lib64/libnvidia-tls.so.535.54.03
+    hostPath: /root/tesla/535.54.03/libnvidia-tls.so.535.54.03
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/lib64/libnvidia-vulkan-producer.so.535.54.03
+    hostPath: /root/tesla/535.54.03/libnvidia-vulkan-producer.so.535.54.03
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/lib64/libnvidia-wayland-client.so.535.54.03
+    hostPath: /root/tesla/535.54.03/libnvidia-wayland-client.so.535.54.03
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/lib64/libnvoptix.so.535.54.03
+    hostPath: /root/tesla/535.54.03/libnvoptix.so.535.54.03
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/share/nvidia/nvoptix.bin
+    hostPath: /root/tesla/535.54.03/nvoptix.bin
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+      #- containerPath: /lib/firmware/nvidia/535.54.03/gsp_ga10x.bin
+      #  hostPath: /root/tesla/535.54.03/gsp_ga10x.bin
+      #  type: bind
+      #  options:
+      #  - ro
+      #  - nosuid
+      #  - nodev
+      #  - bind
+      #- containerPath: /lib/firmware/nvidia/535.54.03/gsp_tu10x.bin
+      #  hostPath: /root/tesla/535.54.03/gsp_tu10x.bin
+      #  type: bind
+      #  options:
+      #  - ro
+      #  - nosuid
+      #  - nodev
+      #  - bind
+  - containerPath: /usr/share/egl/egl_external_platform.d/10_nvidia_wayland.json
+    hostPath: /root/tesla/535.54.03/10_nvidia_wayland.json
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/share/egl/egl_external_platform.d/15_nvidia_gbm.json
+    hostPath: /root/tesla/535.54.03/15_nvidia_gbm.json
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+  - containerPath: /usr/share/glvnd/egl_vendor.d/10_nvidia.json
+    hostPath: /root/tesla/535.54.03/10_nvidia.json
+    type: bind
+    options:
+    - ro
+    - nosuid
+    - nodev
+    - bind
+devices:
+- containerEdits:
+    deviceNodes:
+    - path: /dev/vfio/75
+      #path: /dev/nvidia0
+  name: "0"
+- containerEdits:
+    deviceNodes:
+    - path: /dev/vfio/76
+      #path: /dev/nvidia1
+  name: "1"
+- containerEdits:
+    deviceNodes:
+    - path: /dev/vfio/75
+      #path: /dev/nvidia0
+    - path: /dev/vfio/76
+      #path: /dev/nvidia1
+  name: all
+kind: nvidia.com/gpu

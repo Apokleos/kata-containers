@@ -1,0 +1,62 @@
+{
+    "libs": {
+        "utility": [
+            "libnvidia-ml.so",
+            "libnvidia-cfg.so"
+        ],
+        "compute": [
+            "libcuda.so",
+            "libnvidia-opencl.so",
+            "libnvidia-ptxjitcompiler.so",
+            "libnvidia-allocator.so",
+            "libnvidia-compiler.so",
+            "libnvidia-nvvm.so"
+        ],
+        "video": [
+            "libvdpau_nvidia.so",
+            "libnvidia-encode.so",
+            "libnvidia-opticalflow.so",
+            "libnvcuvid.so"
+        ],
+        "graphics": [
+            "libnvidia-eglcore.so",
+            "libnvidia-glcore.so",
+            "libnvidia-tls.so",
+            "libnvidia-glsi.so",
+            "libnvidia-fbc.so",
+            "libnvidia-ifr.so",
+            "libnvidia-rtcore.so",
+            "libnvoptix.so"
+        ],
+        "graphics_glvnd": [
+            "libGLX_nvidia.so",
+            "libEGL_nvidia.so",
+            "libGLESv2_nvidia.so",
+            "libGLESv1_CM_nvidia.so",
+            "libnvidia-glvkspirv.so",
+            "libnvidia-cbl.so"
+        ],
+        "graphics_compat": [
+            "libGL.so",
+            "libEGL.so",
+            "libGLESv1_CM.so",
+            "libGLESv2.so"
+        ],
+        "ngx": [
+            "libnvidia-ngx.so"
+        ]
+    },
+    "bins": {
+        "utility": [
+            "nvidia-smi",
+            "nvidia-debugdump",
+            "nvidia-persistenced",
+            "nv-fabricmanager"
+        ],
+        "compute": [
+            "nvidia-cuda-mps-control",
+            "nvidia-cuda-mps-server"
+        ]
+    },
+    "options": {}
+}

@@ -1,0 +1,70 @@
+{
+    "version": "0.1.0",
+    "metadata": {
+      "driver_version": "535.54.03",
+      "driver_path": "/opt/kata/nvidia-gpu-driver/",
+      "product_type": "tesla",
+      "annotations": ""
+    },
+    "spec": {
+        "libs": {
+            "graphics": {
+              "libnvoptix.so": "libnvoptix.so.535.54.03",
+              "libnvidia-tls.so": "libnvidia-tls.so.535.54.03",
+              "libnvidia-glcore.so": "libnvidia-glcore.so.535.54.03",
+              "libnvidia-eglcore.so": "libnvidia-eglcore.so.535.54.03",
+              "libnvidia-glsi.so": "libnvidia-glsi.so.535.54.03",
+              "libnvidia-rtcore.so": "libnvidia-rtcore.so.535.54.03",
+              "libnvidia-fbc.so": "libnvidia-fbc.so.535.54.03"
+            },
+            "graphics_compat": {
+              "libEGL.so": "libEGL.so.535.54.03",
+              "libGL.so": "libGL.so.1.7.0",
+              "libGLESv2.so": "libGLESv2.so.2.1.0",
+              "libGLESv1_CM.so": "libGLESv1_CM.so.1.2.0"
+            },
+            "ngx": {
+              "libnvidia-ngx.so": "libnvidia-ngx.so.535.54.03"
+            },
+            "video": {
+              "libvdpau_nvidia.so": "libvdpau_nvidia.so.535.54.03",
+              "libnvidia-opticalflow.so": "libnvidia-opticalflow.so.535.54.03",
+              "libnvcuvid.so": "libnvcuvid.so.535.54.03",
+              "libnvidia-encode.so": "libnvidia-encode.so.535.54.03"
+            },
+            "graphics_glvnd": {
+              "libGLX_nvidia.so": "libGLX_nvidia.so.535.54.03",
+              "libGLESv2_nvidia.so": "libGLESv2_nvidia.so.535.54.03",
+              "libGLESv1_CM_nvidia.so": "libGLESv1_CM_nvidia.so.535.54.03",
+              "libEGL_nvidia.so": "libEGL_nvidia.so.535.54.03",
+              "libnvidia-glvkspirv.so": "libnvidia-glvkspirv.so.535.54.03"
+            },
+            "compute": {
+              "libcudadebugger.so": "libcudadebugger.so.535.54.03",
+              "libnvidia-opencl.so": "libnvidia-opencl.so.535.54.03",
+              "libcuda.so": "libcuda.so.535.54.03",
+              "libnvidia-pkcs11-openssl3.so": "libnvidia-pkcs11-openssl3.so.535.54.03",
+              "libnvidia-ptxjitcompiler.so": "libnvidia-ptxjitcompiler.so.535.54.03",
+              "libnvidia-pkcs11.so": "libnvidia-pkcs11.so.535.54.03",
+              "libnvidia-allocator.so": "libnvidia-allocator.so.535.54.03",
+              "libnvidia-nvvm.so": "libnvidia-nvvm.so.535.54.03"
+            },
+            "utility": {
+              "libnvidia-ml.so": "libnvidia-ml.so.535.54.03",
+              "libnvidia-cfg.so": "libnvidia-cfg.so.535.54.03"
+            }
+        },
+        "bins": {
+          "compute": [
+            "nvidia-cuda-mps-control",
+            "nvidia-cuda-mps-server"
+          ],
+          "utility": [
+            "nvidia-smi",
+            "nvidia-debugdump",
+            "nvidia-persistenced",
+            "nv-fabricmanager"
+          ]
+      }
+    }
+}
