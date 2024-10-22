@@ -10,6 +10,9 @@ mod share_virtio_fs_inline;
 use share_virtio_fs_inline::ShareVirtioFsInline;
 mod share_virtio_fs_standalone;
 use share_virtio_fs_standalone::ShareVirtioFsStandalone;
+mod share_fs_nydus;
+use share_fs_nydus::SharefsNydus;
+
 mod utils;
 use tokio::sync::Mutex;
 pub use utils::{
@@ -32,7 +35,7 @@ use tokio::sync::RwLock;
 use hypervisor::{device::device_manager::DeviceManager, Hypervisor};
 
 const VIRTIO_FS: &str = "virtio-fs";
-const _VIRTIO_FS_NYDUS: &str = "virtio-fs-nydus";
+const VIRTIO_FS_NYDUS: &str = "virtio-fs-nydus";
 const INLINE_VIRTIO_FS: &str = "inline-virtio-fs";
 
 const KATA_HOST_SHARED_DIR: &str = "/run/kata-containers/shared/sandboxes/";
@@ -159,6 +162,10 @@ pub fn new(id: &str, config: &SharedFsInfo) -> Result<Arc<dyn ShareFs>> {
         VIRTIO_FS => Ok(Arc::new(
             ShareVirtioFsStandalone::new(id, config).context("new standalone virtio fs")?,
         )),
-        _ => Err(anyhow!("unsupported shred fs {:?}", &shared_fs)),
+        // VIRTIO_FS_NYDUS => Ok(Arc::new(
+        _ => Ok(Arc::new(
+            SharefsNydus::new(id, config).context("new nydus share fs")?,
+        )),
+        // _ => Err(anyhow!("unsupported shred fs {:?}", &shared_fs)),
     }
 }

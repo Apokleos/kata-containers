@@ -20,6 +20,7 @@ use hypervisor::{device::device_manager::DeviceManager, Hypervisor};
 use kata_types::mount::{Mount, NydusExtraOptions};
 use oci_spec::runtime as oci;
 use tokio::sync::RwLock;
+
 // Used for nydus rootfs
 pub(crate) const NYDUS_ROOTFS_TYPE: &str = "fuse.nydus-overlayfs";
 // Used for Nydus v5 rootfs version
@@ -60,6 +61,7 @@ impl NydusRootfs {
             // see this issue (https://github.com/kata-containers/kata-containers/issues/5143)
             NYDUS_ROOTFS_V5 | NYDUS_ROOTFS_V6 => {
                 // rafs mount the metadata of nydus rootfs
+                // nydus mount point in Guest: /run/kata-containers/shared/containers/rafs/${CID}/rootfs_lower
                 let rafs_mnt = do_get_guest_share_path(HYBRID_ROOTFS_LOWER_DIR, cid, true);
                 rafs_mount(
                     d,
@@ -86,7 +88,7 @@ impl NydusRootfs {
                         source: extra_options.snapshot_dir.clone(),
                         target: SNAPSHOT_DIR.to_string(),
                         readonly: false,
-                        is_rafs: false,
+                        is_rafs: true,
                     })
                     .await
                     .context("share nydus rootfs")?;
