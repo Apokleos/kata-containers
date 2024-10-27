@@ -31,6 +31,7 @@ tracing = "0.1.36"
 ttrpc = {version = "0.8.1", features = ["async"] }
 protobuf = "3.1.0"
 
+regex = "1.10.3"
 kata-sys-util = { path = "../../../libs/kata-sys-util" }
 kata-types = { path = "../../../libs/kata-types" }
 logging = { path = "../../../libs/logging" }
