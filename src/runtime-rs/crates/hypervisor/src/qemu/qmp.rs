@@ -3,9 +3,11 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
+use crate::device::pci_path::PciPath;
 use crate::qemu::cmdline_generator::{DeviceVirtioNet, Netdev};
+use crate::VfioDevice;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use nix::sys::socket::{sendmsg, ControlMessage, MsgFlags};
 use std::fmt::{Debug, Error, Formatter};
 use std::io::BufReader;
@@ -14,8 +16,10 @@ use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
 use qapi::qmp;
-use qapi_qmp;
+use qapi_qmp::{self, PciDeviceInfo};
 use qapi_spec::Dictionary;
+use serde_json::Value;
+use std::convert::TryFrom;
 
 pub struct Qmp {
     qmp: qapi::Qmp<qapi::Stream<BufReader<UnixStream>, UnixStream>>,
@@ -53,7 +57,7 @@ impl Qmp {
         // (containerd's task creation timeout is 2 s by default).  OTOH
         // setting it too short would risk interfering with a normal launch,
         // perhaps just seeing some delay due to a heavily loaded host.
-        stream.set_read_timeout(Some(Duration::from_millis(250)))?;
+        stream.set_read_timeout(Some(Duration::from_millis(2500)))?;
 
         let mut qmp = Qmp {
             qmp: qapi::Qmp::new(qapi::Stream::new(
@@ -467,8 +471,128 @@ impl Qmp {
 
         Ok(())
     }
+
+    fn execute_vfio_device_add(&mut self, vfio_dev_add: VfioDeviceAdd) -> Result<()> {
+        let status = self.qmp.execute(&qmp::query_status {}).unwrap();
+        info!(
+            sl!(),
+            "Qemu Monitor status before hotplug vfio device: {:?}", status
+        );
+
+        let vfio_device_add = qmp::device_add {
+            driver: vfio_dev_add.driver,
+            bus: vfio_dev_add.bus,
+            id: vfio_dev_add.id,
+            arguments: vfio_dev_add.arguments,
+        };
+        info!(sl!(), "vfio_device_add: {:?}", vfio_device_add.clone());
+
+        self.qmp
+            .execute(&vfio_device_add)
+            .map_err(|e| anyhow!(format!("{:?}", e)))?;
+
+        Ok(())
+    }
+
+    pub fn get_device_by_qdev_id(&mut self, qdev_id: &str) -> Result<PciPath> {
+        let format_str = |vec: &Vec<i64>| -> String {
+            vec.iter()
+                .map(|num| format!("{:02}", num))
+                .collect::<Vec<String>>()
+                .join("/")
+        };
+
+        let mut path = vec![];
+        let pci = self.qmp.execute(&qapi_qmp::query_pci {})?;
+        for pci_info in pci.iter() {
+            if let Some(found_device) =
+                get_pci_path_by_qdev_id(&pci_info.devices, qdev_id, &mut path)
+            {
+                let pci_path = format_str(&path);
+                return PciPath::try_from(pci_path.as_str());
+            }
+        }
+
+        Err(anyhow!("no target device found"))
+    }
+
+    pub async fn hotplug_vfio_device(&mut self, vfiodev: &mut VfioDevice) -> Result<()> {
+        // FIXME: the first one might not the true device we want to passthrough.
+        let primary_device = vfiodev.devices.first_mut().unwrap();
+        info!(
+            sl!(),
+            "qmp hotplug vfio primary_device {:?}", &primary_device
+        );
+
+        let mut vfio_args = Dictionary::new();
+        let bdf = if !primary_device.bus_slot_func.clone().starts_with("0000") {
+            format!("0000:{}", primary_device.bus_slot_func.clone())
+        } else {
+            primary_device.bus_slot_func.clone()
+        };
+        vfio_args.insert("host".to_owned(), bdf.into());
+        vfio_args.insert("multifunction".to_owned(), "off".into());
+
+        let vfio_dev_add = VfioDeviceAdd {
+            driver: vfiodev.driver_type.clone(),
+            bus: if vfiodev.bus.is_empty() {
+                None
+            } else {
+                Some(vfiodev.bus.clone())
+            },
+            id: if primary_device.hostdev_id.is_empty() {
+                None
+            } else {
+                Some(primary_device.hostdev_id.clone())
+            },
+            arguments: vfio_args,
+        };
+
+        self.execute_vfio_device_add(vfio_dev_add)
+            .context("exec vfio device add")?;
+
+        let vfio_device_pci_path = self
+            .get_device_by_qdev_id(&primary_device.hostdev_id)
+            .context("get device by qdev_id failed")?;
+
+        primary_device.guest_pci_path = Some(vfio_device_pci_path);
+
+        Ok(())
+    }
 }
 
 fn vcpu_id_from_core_id(core_id: i64) -> String {
     format!("cpu-{}", core_id)
+}
+
+#[derive(Clone, Debug)]
+struct VfioDeviceAdd {
+    driver: String,
+    bus: Option<String>,
+    id: Option<String>,
+    arguments: serde_json::Map<String, Value>,
+}
+
+pub fn get_pci_path_by_qdev_id(
+    devices: &[PciDeviceInfo],
+    qdev_id: &str,
+    path: &mut Vec<i64>,
+) -> Option<PciDeviceInfo> {
+    for device in devices {
+        path.push(device.slot);
+        if device.qdev_id == qdev_id {
+            return Some(device.clone());
+        }
+
+        if let Some(ref bridge) = device.pci_bridge {
+            if let Some(ref bridge_devices) = bridge.devices {
+                if let Some(found_device) = get_pci_path_by_qdev_id(bridge_devices, qdev_id, path) {
+                    return Some(found_device);
+                }
+            }
+        }
+        // If not found, pop the current slot before moving to next device
+        path.pop();
+    }
+    None
 }

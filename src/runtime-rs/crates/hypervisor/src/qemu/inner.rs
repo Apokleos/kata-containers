@@ -563,7 +563,7 @@ impl QemuInner {
         let is_qemu_ready_to_hotplug = self.qmp.is_some();
         if is_qemu_ready_to_hotplug {
             // hypervisor is running already
-            device = self.hotplug_device(device)?;
+            device = self.hotplug_device(device).await?;
         } else {
             // store the device to coldplug it later, on hypervisor launch
             self.devices.push(device.clone());
@@ -579,7 +579,7 @@ impl QemuInner {
         ))
     }
 
-    fn hotplug_device(&mut self, device: DeviceType) -> Result<DeviceType> {
+    async fn hotplug_device(&mut self, device: DeviceType) -> Result<DeviceType> {
         let qmp = match self.qmp {
             Some(ref mut qmp) => qmp,
             None => return Err(anyhow!("QMP not initialized")),
@@ -593,6 +593,10 @@ impl QemuInner {
                     network_device.config.guest_mac.clone().unwrap(),
                 )?;
                 qmp.hotplug_network_device(&netdev, &virtio_net_device)?
+            }
+            DeviceType::Vfio(mut vfiodev) => {
+                qmp.hotplug_vfio_device(&mut vfiodev).await?;
+                return Ok(DeviceType::Vfio(vfiodev));
             }
             _ => info!(sl!(), "hotplugging of {:#?} is unsupported", device),
         }
