@@ -497,7 +497,7 @@ impl Qmp {
     pub fn get_device_by_qdev_id(&mut self, qdev_id: &str) -> Result<PciPath> {
         let format_str = |vec: &Vec<i64>| -> String {
             vec.iter()
-                .map(|num| format!("{:02}", num))
+                .map(|num| format!("{:02x}", num))
                 .collect::<Vec<String>>()
                 .join("/")
         };
@@ -505,7 +505,7 @@ impl Qmp {
         let mut path = vec![];
         let pci = self.qmp.execute(&qapi_qmp::query_pci {})?;
         for pci_info in pci.iter() {
-            if let Some(found_device) =
+            if let Some(_found_device) =
                 get_pci_path_by_qdev_id(&pci_info.devices, qdev_id, &mut path)
             {
                 let pci_path = format_str(&path);
