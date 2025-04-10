@@ -4,6 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
+use crate::health_check::HealthCheck;
 use agent::kata::KataAgent;
 use agent::types::KernelModule;
 use agent::{
@@ -20,6 +21,7 @@ use common::{
 };
 
 use containerd_shim_protos::events::task::{TaskExit, TaskOOM};
+use hypervisor::PortDeviceConfig;
 use hypervisor::VsockConfig;
 use hypervisor::HYPERVISOR_FIRECRACKER;
 use hypervisor::HYPERVISOR_REMOTE;
@@ -46,8 +48,6 @@ use std::sync::Arc;
 use strum::Display;
 use tokio::sync::{mpsc::Sender, Mutex, RwLock};
 use tracing::instrument;
-
-use crate::health_check::HealthCheck;
 
 pub(crate) const VIRTCONTAINER: &str = "virt_container";
 
@@ -166,7 +166,29 @@ impl VirtSandbox {
             resource_configs.push(ResourceConfig::Protection(protection_dev_config));
         }
 
+        // prepare pcie port device config
+        if let Some(port_dev_config) = self.prepare_pcie_port_devices().await {
+            resource_configs.push(ResourceConfig::PortDevice(port_dev_config));
+        }
+
         Ok(resource_configs)
+    }
+
+    async fn prepare_pcie_port_devices(&self) -> Option<PortDeviceConfig> {
+        let device_manager = self.resource_manager.get_device_manager().await;
+        let dm = device_manager.read().await;
+
+        let topo = dm.get_pcie_topology()?;
+        let pcie_port = topo.get_pcie_port()?;
+
+        info!(
+            sl!(),
+            "prepare pcie {:?} with {:?} devices for VM.", pcie_port.0, pcie_port.1
+        );
+
+        let port_config = PortDeviceConfig::new(pcie_port.0, pcie_port.1);
+
+        Some(port_config)
     }
 
     async fn prepare_network_resource(
