@@ -61,7 +61,7 @@ use kata_types::config::hypervisor::TopologyConfigInfo;
 
 use super::pci_path::PciPath;
 
-const DEFAULT_PCIE_ROOT_BUS: &str = "pcie.0";
+pub const DEFAULT_PCIE_ROOT_BUS: &str = "pcie.0";
 // Currently, CLH and Dragonball support device attachment solely on the root bus.
 const DEFAULT_PCIE_ROOT_BUS_ADDRESS: &str = "0000:00";
 pub const PCIE_ROOT_BUS_SLOTS_CAPACITY: u32 = 32;
@@ -203,14 +203,120 @@ pub struct PCIeRootComplex {
     pub root_bus_devices: HashMap<String, PCIeEndpoint>,
 }
 
-#[derive(Debug, Default)]
+/// PCIePortBusPrefix defines the naming scheme for PCIe ports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum PCIePortBusPrefix {
+    RootPort,
+    SwitchPort,
+    SwitchUpstreamPort,
+    SwitchDownstreamPort,
+}
+
+impl std::fmt::Display for PCIePortBusPrefix {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let prefix = match self {
+            PCIePortBusPrefix::RootPort => "rp",
+            PCIePortBusPrefix::SwitchPort => "sw",
+            PCIePortBusPrefix::SwitchUpstreamPort => "swup",
+            PCIePortBusPrefix::SwitchDownstreamPort => "swdp",
+        };
+        write!(f, "{}", prefix)
+    }
+}
+
+/// PCIePort distinguishes between different types of PCIe ports.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum PCIePort {
+    // NoPort is for disabling VFIO hotplug/coldplug
+    #[default]
+    NoPort,
+
+    /// RootPort attach VFIO devices to a root-port
+    RootPort,
+
+    // SwitchPort attach VFIO devices to a switch-port
+    SwitchPort,
+
+    // InvalidPort is for invalid port
+    InvalidPort,
+}
+
+impl std::fmt::Display for PCIePort {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let port = match self {
+            PCIePort::NoPort => "no-port",
+            PCIePort::RootPort => "root-port",
+            PCIePort::SwitchPort => "switch-port",
+            PCIePort::InvalidPort => "invalid-port",
+        };
+        write!(f, "{}", port)
+    }
+}
+
+/// Represents a PCIe port
+#[derive(Default, Clone, Debug)]
+pub struct PciePort {
+    pub id: u32,
+    pub bus: String,
+    pub port_type: PCIePort,
+    pub connected_swdp_devices: Vec<String>, // Names of connected devices
+}
+
+/// Represents a PCIe switch
+#[derive(Debug, Clone)]
+pub struct PcieSwitch {
+    pub id: u32,
+    pub bus: String,
+    pub switch_ports: HashMap<u32, PciePort>, // Switch ports
+}
+
+/// Represents a root port attached on root bus, TopologyPortDevice represents a PCIe device used for hotplugging.
+#[derive(Debug, Clone)]
+pub struct TopologyPortDevice {
+    pub id: String,
+    pub bus: String,
+    pub connected_switch: Option<PcieSwitch>, // Connected PCIe switch
+}
+
+impl TopologyPortDevice {
+    pub fn new(id: &str, bus: &str) -> Self {
+        Self {
+            id: id.to_string(),
+            bus: bus.to_owned(),
+            connected_switch: None,
+        }
+    }
+
+    pub fn get_port_type(&self) -> PCIePort {
+        match self.connected_switch {
+            Some(_) => PCIePort::SwitchPort,
+            None => PCIePort::RootPort,
+        }
+    }
+}
+
+/// Represents strategy selection
+#[derive(Debug)]
+pub enum Strategy {
+    // Strategy 1: Use 1 Root Port to connect 1 PCIe Switch with multiple downstream switch ports
+    SingleRootPort,
+    // Strategy 2: Use multiple Root Ports to connect multiple separate PCIe Switches (each Switch provides 1 downstream port)
+    MultipleRootPorts,
+    // Strategy 3: Use multiple Root Ports to connect multiple PCIe Switches (each Switch provides at least 1 downstream port)
+    Hybrid,
+}
+
+#[derive(Clone, Debug, Default)]
 pub struct PCIeTopology {
     pub hypervisor_name: String,
     pub root_complex: PCIeRootComplex,
 
     pub bridges: u32,
     pub pcie_root_ports: u32,
+    pub pcie_switch_ports: u32,
     pub hotplug_vfio_on_root_bus: bool,
+    // pcie_port_devices keeps track of the devices attached to different types of PCI ports.
+    pub pcie_port_devices: HashMap<u32, TopologyPortDevice>,
 }
 
 impl PCIeTopology {
@@ -225,12 +331,18 @@ impl PCIeTopology {
             root_bus_devices: HashMap::with_capacity(PCIE_ROOT_BUS_SLOTS_CAPACITY as usize),
         };
 
+        // initialize port devices within PCIe Topology
+        let total_rp = topo_config.device_info.pcie_root_port;
+        let total_swp = topo_config.device_info.pcie_switch_port;
+
         Some(Self {
             hypervisor_name: topo_config.hypervisor_name.to_owned(),
             root_complex,
             bridges: topo_config.device_info.default_bridges,
-            pcie_root_ports: topo_config.device_info.pcie_root_port,
+            pcie_root_ports: total_rp,
+            pcie_switch_ports: total_swp,
             hotplug_vfio_on_root_bus: topo_config.device_info.hotplug_vfio_on_root_bus,
+            pcie_port_devices: HashMap::new(),
         })
     }
 
@@ -341,6 +453,211 @@ impl PCIeTopology {
 
         Ok(pci_path)
     }
+
+    /// get pcie port and its total
+    pub fn get_pcie_port(&self) -> Option<(PCIePort, u32)> {
+        match (self.pcie_root_ports, self.pcie_switch_ports) {
+            (0, 0) | (_, _) if self.pcie_root_ports > 0 && self.pcie_switch_ports > 0 => None,
+            (r, _) if r > 0 => Some((PCIePort::RootPort, r)),
+            (_, s) if s > 0 => Some((PCIePort::SwitchPort, s)),
+            _ => None,
+        }
+    }
+
+    /// Adds a root port to pcie bus
+    fn add_pcie_root_port(&mut self, id: u32) -> Result<()> {
+        if self.pcie_port_devices.contains_key(&id) {
+            return Err(anyhow!("Root Port {} already exists.", id));
+        }
+
+        let root_port_id = format!("{}{}", PCIePortBusPrefix::RootPort, id);
+        self.pcie_port_devices.insert(
+            id,
+            TopologyPortDevice {
+                id: root_port_id,
+                bus: DEFAULT_PCIE_ROOT_BUS.to_string(),
+                connected_switch: None,
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Adds a PCIe switch to a root port
+    fn add_switch_to_root_port(&mut self, root_port_id: u32, switch_id: u32) -> Result<()> {
+        let root_port = self
+            .pcie_port_devices
+            .get_mut(&root_port_id)
+            .ok_or_else(|| anyhow!("Root Port {} does not exist.", root_port_id))?;
+
+        if root_port.connected_switch.is_some() {
+            return Err(anyhow!(
+                "Root Port {} already has a connected switch.",
+                root_port_id
+            ));
+        }
+        let rp_bus = format!("{}{}", PCIePortBusPrefix::RootPort, root_port_id);
+
+        root_port.connected_switch = Some(PcieSwitch {
+            id: switch_id,
+            bus: rp_bus,
+            switch_ports: HashMap::new(),
+        });
+
+        Ok(())
+    }
+
+    /// Adds a switch port to a PCIe switch
+    fn add_switch_port_to_switch(
+        &mut self,
+        swup_bus: &str,
+        root_port_id: u32,
+        switch_port_id: u32,
+        swdp_name: String,
+    ) -> Result<()> {
+        let root_port = self
+            .pcie_port_devices
+            .get_mut(&root_port_id)
+            .ok_or_else(|| anyhow!("Root Port {} does not exist.", root_port_id))?;
+
+        let switch = root_port
+            .connected_switch
+            .as_mut()
+            .ok_or_else(|| anyhow!("Root Port {} has no connected switch.", root_port_id))?;
+
+        if switch.switch_ports.contains_key(&switch_port_id) {
+            return Err(anyhow!(
+                "Switch Port {} already exists in Switch {}.",
+                switch_port_id,
+                switch.id
+            ));
+        }
+
+        switch.switch_ports.insert(
+            switch_port_id,
+            PciePort {
+                id: switch_port_id,
+                bus: swup_bus.to_string(),
+                port_type: PCIePort::SwitchPort,
+                connected_swdp_devices: vec![swdp_name],
+            },
+        );
+
+        Ok(())
+    }
+
+    /// Adds a root port to pcie bus
+    pub fn add_root_ports_on_bus(&mut self, num_root_ports: u32) -> Result<()> {
+        for index in 0..num_root_ports {
+            self.add_pcie_root_port(index)?;
+        }
+
+        Ok(())
+    }
+
+    /// Strategy selection for adding switch ports
+    pub fn add_switch_ports_with_strategy(
+        &mut self,
+        num_switches: u32,
+        num_switch_ports: u32,
+        strategy: Strategy,
+    ) -> Result<()> {
+        match strategy {
+            Strategy::SingleRootPort => {
+                self.add_switch_ports_single_root_port(num_switches, num_switch_ports)
+            }
+            Strategy::MultipleRootPorts => {
+                self.add_switch_ports_multiple_root_ports(num_switches, num_switch_ports)
+            }
+            Strategy::Hybrid => self.add_switch_ports_hybrid(num_switches, num_switch_ports),
+        }
+    }
+
+    /// Strategy 1: Use 1 Root Port to connect 1 PCIe Switch with multiple downstream switch ports
+    fn add_switch_ports_single_root_port(
+        &mut self,
+        _num_switches: u32,
+        num_switch_ports: u32,
+    ) -> Result<()> {
+        let root_port_id = 1;
+        if !self.pcie_port_devices.contains_key(&root_port_id) {
+            self.add_pcie_root_port(root_port_id)?;
+        }
+
+        let switch_id = 101;
+        self.add_switch_to_root_port(root_port_id, switch_id)?;
+
+        let swup_bus = format!("{}{}", PCIePortBusPrefix::SwitchUpstreamPort, switch_id);
+        for i in 1..=num_switch_ports {
+            self.add_switch_port_to_switch(
+                &swup_bus,
+                root_port_id,
+                i,
+                format!("{}{}", PCIePortBusPrefix::SwitchDownstreamPort, i),
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Strategy 2: Use multiple Root Ports to connect multiple separate PCIe Switches (each Switch provides 1 downstream port)
+    fn add_switch_ports_multiple_root_ports(
+        &mut self,
+        _num_switches: u32,
+        num_switch_ports: u32,
+    ) -> Result<()> {
+        for i in 1..=num_switch_ports {
+            let root_port_id = i;
+            if !self.pcie_port_devices.contains_key(&root_port_id) {
+                self.add_pcie_root_port(root_port_id)?;
+            }
+
+            let switch_id = 100 + i;
+            self.add_switch_to_root_port(root_port_id, switch_id)?;
+            let swup_bus = format!("{}{}", PCIePortBusPrefix::SwitchUpstreamPort, switch_id);
+
+            self.add_switch_port_to_switch(
+                &swup_bus,
+                root_port_id,
+                1,
+                format!("{}{}", PCIePortBusPrefix::SwitchDownstreamPort, i),
+            )?;
+        }
+
+        Ok(())
+    }
+
+    /// Strategy 3: Use multiple Root Ports to connect multiple PCIe Switches (each Switch provides at least 1 downstream port)
+    fn add_switch_ports_hybrid(&mut self, num_switches: u32, num_switch_ports: u32) -> Result<()> {
+        let ports_per_switch = num_switch_ports / num_switches;
+
+        for i in 1..=num_switches {
+            let root_port_id = i;
+            if !self.pcie_port_devices.contains_key(&root_port_id) {
+                self.add_pcie_root_port(root_port_id)?;
+            }
+
+            let switch_id = 100 + i;
+            self.add_switch_to_root_port(root_port_id, switch_id)?;
+            let swup_bus = format!("{}{}", PCIePortBusPrefix::SwitchUpstreamPort, switch_id);
+
+            for j in 1..=ports_per_switch {
+                let switch_port_id = j;
+                self.add_switch_port_to_switch(
+                    &swup_bus,
+                    root_port_id,
+                    switch_port_id,
+                    format!(
+                        "{}{}",
+                        PCIePortBusPrefix::SwitchDownstreamPort,
+                        (i - 1) * ports_per_switch + j
+                    ),
+                )?;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 // do_add_pcie_endpoint do add a device into PCIe topology with pcie endpoint
@@ -363,4 +680,184 @@ pub fn do_add_pcie_endpoint(
     }
 
     topology.do_insert_or_update(pcie_endpoint)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn new_pcie_topology(rp_total: u32, sw_total: u32) -> PCIeTopology {
+        PCIeTopology {
+            pcie_root_ports: rp_total,
+            pcie_switch_ports: sw_total,
+            pcie_port_devices: HashMap::with_capacity(sw_total as usize),
+            ..Default::default()
+        }
+    }
+
+    fn create_pcie_topo(rps: u32, swps: u32) -> PCIeTopology {
+        PCIeTopology {
+            pcie_root_ports: rps,
+            pcie_switch_ports: swps,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_no_port() {
+        let pcie_topo = create_pcie_topo(0, 0);
+        assert_eq!(pcie_topo.get_pcie_port(), None);
+    }
+
+    #[test]
+    fn test_root_port_only() {
+        let pcie_topo = create_pcie_topo(2, 0);
+        assert_eq!(pcie_topo.get_pcie_port(), Some((PCIePort::RootPort, 2)));
+    }
+
+    #[test]
+    fn test_switch_port_only() {
+        let pcie_topo = create_pcie_topo(0, 1);
+        assert_eq!(pcie_topo.get_pcie_port(), Some((PCIePort::SwitchPort, 1)));
+    }
+
+    #[test]
+    fn test_both_ports_invalid() {
+        let pcie_topo = create_pcie_topo(1, 1);
+        assert_eq!(pcie_topo.get_pcie_port(), None);
+    }
+
+    #[test]
+    fn test_new_pcie_topology() {
+        let topology = new_pcie_topology(2, 3);
+        assert_eq!(topology.pcie_root_ports, 2);
+        assert_eq!(topology.pcie_switch_ports, 3);
+        assert!(topology.pcie_port_devices.is_empty());
+    }
+
+    #[test]
+    fn test_get_pcie_port() {
+        let topology = new_pcie_topology(2, 0);
+        assert_eq!(topology.get_pcie_port(), Some((PCIePort::RootPort, 2)));
+
+        let topology = new_pcie_topology(0, 3);
+        assert_eq!(topology.get_pcie_port(), Some((PCIePort::SwitchPort, 3)));
+
+        let topology = new_pcie_topology(0, 0);
+        assert_eq!(topology.get_pcie_port(), None);
+
+        let topology = new_pcie_topology(2, 3);
+        assert_eq!(topology.get_pcie_port(), None);
+    }
+
+    #[test]
+    fn test_add_pcie_root_port() {
+        let mut topology = new_pcie_topology(1, 0);
+        assert!(topology.add_pcie_root_port(1).is_ok());
+        assert!(topology.pcie_port_devices.contains_key(&1));
+
+        // Adding the same root port again should fail
+        assert!(topology.add_pcie_root_port(1).is_err());
+    }
+
+    #[test]
+    fn test_add_switch_to_root_port() {
+        let mut topology = new_pcie_topology(1, 0);
+        topology.add_pcie_root_port(1).unwrap();
+        assert!(topology.add_switch_to_root_port(1, 101).is_ok());
+
+        // Adding a switch to a non-existent root port should fail
+        assert!(topology.add_switch_to_root_port(2, 102).is_err());
+
+        // Adding a switch to a root port that already has a switch should fail
+        assert!(topology.add_switch_to_root_port(1, 103).is_err());
+    }
+
+    #[test]
+    fn test_add_switch_port_to_switch() {
+        let mut topology = new_pcie_topology(1, 0);
+        topology.add_pcie_root_port(1).unwrap();
+        topology.add_switch_to_root_port(1, 101).unwrap();
+
+        let swup_bus = format!("{}{}", PCIePortBusPrefix::SwitchUpstreamPort, 101);
+        assert!(topology
+            .add_switch_port_to_switch(&swup_bus, 1, 1, "swdp1".to_string())
+            .is_ok());
+
+        // Adding a switch port to a non-existent root port should fail
+        assert!(topology
+            .add_switch_port_to_switch(&swup_bus, 2, 1, "swdp2".to_string())
+            .is_err());
+
+        // Adding a switch port to a root port without a switch should fail
+        let mut topology = new_pcie_topology(1, 0);
+        topology.add_pcie_root_port(1).unwrap();
+        assert!(topology
+            .add_switch_port_to_switch(&swup_bus, 1, 1, "swdp1".to_string())
+            .is_err());
+
+        // Adding a switch port with a duplicate ID should fail
+        let mut topology = new_pcie_topology(1, 0);
+        topology.add_pcie_root_port(1).unwrap();
+        topology.add_switch_to_root_port(1, 101).unwrap();
+        assert!(topology
+            .add_switch_port_to_switch(&swup_bus, 1, 1, "swdp1".to_string())
+            .is_ok());
+        assert!(topology
+            .add_switch_port_to_switch(&swup_bus, 1, 1, "swdp2".to_string())
+            .is_err());
+    }
+
+    #[test]
+    fn test_add_root_ports_on_bus() {
+        let mut topology = new_pcie_topology(3, 0);
+        assert!(topology.add_root_ports_on_bus(3).is_ok());
+        assert_eq!(topology.pcie_port_devices.len(), 3);
+
+        // Adding more root ports than available should fail
+        assert!(topology.add_root_ports_on_bus(1).is_err());
+    }
+
+    #[test]
+    fn test_add_switch_ports_single_root_port() {
+        let mut topology = new_pcie_topology(1, 0);
+        assert!(topology
+            .add_switch_ports_with_strategy(1, 2, Strategy::SingleRootPort)
+            .is_ok());
+
+        let root_port = topology.pcie_port_devices.get(&1).unwrap();
+        assert!(root_port.connected_switch.is_some());
+        let switch = root_port.connected_switch.as_ref().unwrap();
+        assert_eq!(switch.switch_ports.len(), 2);
+    }
+
+    #[test]
+    fn test_add_switch_ports_multiple_root_ports() {
+        let mut topology = new_pcie_topology(0, 4);
+        assert!(topology
+            .add_switch_ports_with_strategy(4, 4, Strategy::MultipleRootPorts)
+            .is_ok());
+
+        for i in 1..=3 {
+            let root_port = topology.pcie_port_devices.get(&i).unwrap();
+            assert!(root_port.connected_switch.is_some());
+            let switch = root_port.connected_switch.as_ref().unwrap();
+            assert_eq!(switch.switch_ports.len(), 1);
+        }
+    }
+
+    #[test]
+    fn test_add_switch_ports_hybrid() {
+        let mut topology = new_pcie_topology(2, 0);
+        assert!(topology
+            .add_switch_ports_with_strategy(2, 4, Strategy::Hybrid)
+            .is_ok());
+
+        for i in 1..=2 {
+            let root_port = topology.pcie_port_devices.get(&i).unwrap();
+            assert!(root_port.connected_switch.is_some());
+            let switch = root_port.connected_switch.as_ref().unwrap();
+            assert_eq!(switch.switch_ports.len(), 2);
+        }
+    }
 }
