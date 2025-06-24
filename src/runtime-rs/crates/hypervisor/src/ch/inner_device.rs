@@ -10,6 +10,7 @@ use crate::device::DeviceType;
 use crate::HybridVsockDevice;
 use crate::NetworkConfig;
 use crate::NetworkDevice;
+use crate::ProtectionDeviceConfig;
 use crate::ShareFsConfig;
 use crate::ShareFsDevice;
 use crate::VfioDevice;
@@ -24,7 +25,10 @@ use ch_config::ch_api::{
 };
 use ch_config::convert::{DEFAULT_DISK_QUEUES, DEFAULT_DISK_QUEUE_SIZE, DEFAULT_NUM_PCI_SEGMENTS};
 use ch_config::DiskConfig;
-use ch_config::{net_util::MacAddr, DeviceConfig, FsConfig, NetConfig, VsockConfig};
+use ch_config::{
+    net_util::MacAddr, DeviceConfig, FsConfig, NetConfig, ProtectionDevConfig, VsockConfig,
+};
+
 use safe_path::scoped_join;
 use std::convert::TryFrom;
 use std::path::PathBuf;
@@ -61,6 +65,7 @@ impl CloudHypervisorInner {
             match device {
                 DeviceType::ShareFs(_) => self.pending_devices.insert(0, device.clone()),
                 DeviceType::Network(_) => self.pending_devices.insert(0, device.clone()),
+                DeviceType::Protection(_) => self.pending_devices.insert(0, device.clone()),
                 _ => {
                     debug!(
                         sl!(),
@@ -365,9 +370,14 @@ impl CloudHypervisorInner {
 
     pub(crate) async fn get_shared_devices(
         &mut self,
-    ) -> Result<(Option<Vec<FsConfig>>, Option<Vec<NetConfig>>)> {
+    ) -> Result<(
+        Option<Vec<FsConfig>>,
+        Option<Vec<NetConfig>>,
+        Option<ProtectionDevConfig>,
+    )> {
         let mut shared_fs_devices = Vec::<FsConfig>::new();
         let mut network_devices = Vec::<NetConfig>::new();
+        let mut protection_device = ProtectionDevConfig::default();
 
         while let Some(dev) = self.pending_devices.pop() {
             match dev {
@@ -382,11 +392,29 @@ impl CloudHypervisorInner {
                     let net_config = NetConfig::try_from(net_device.config)?;
                     network_devices.push(net_config);
                 }
+                DeviceType::Protection(pdev) => {
+                    let config = pdev.config;
+                    match config {
+                        // ProtectionDeviceConfig::SevSnp(sevsnp_cfg) => {
+                        //     if sevsnp_cfg.is_snp {
+                        //         protection_device.host_data = sevsnp_cfg.host_data;
+                        //     }
+                        // }
+                        ProtectionDeviceConfig::Tdx(tdx_config) => {
+                            protection_device.mrconfigid = tdx_config.mrconfigid;
+                        }
+                        _ => info!(sl!(), "CH: unsupported protection device type"),
+                    }
+                }
                 _ => continue,
             }
         }
 
-        Ok((Some(shared_fs_devices), Some(network_devices)))
+        Ok((
+            Some(shared_fs_devices),
+            Some(network_devices),
+            Some(protection_device),
+        ))
     }
 }
 

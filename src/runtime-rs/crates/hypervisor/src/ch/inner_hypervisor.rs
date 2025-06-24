@@ -182,7 +182,8 @@ impl CloudHypervisorInner {
     }
 
     async fn boot_vm(&mut self) -> Result<()> {
-        let (shared_fs_devices, network_devices) = self.get_shared_devices().await?;
+        let (shared_fs_devices, network_devices, protection_device) =
+            self.get_shared_devices().await?;
 
         let socket = self
             .api_socket
@@ -210,6 +211,7 @@ impl CloudHypervisorInner {
             vsock_socket_path,
             cfg: self.config.clone(),
             guest_protection_to_use: self.guest_protection_to_use.clone(),
+            protection_device,
             shared_fs_devices,
             network_devices,
         };
