@@ -600,6 +600,124 @@ impl Qmp {
         Ok(Some(pci_path))
     }
 
+    /// Hot-plug virtio scsi disk through qmp
+    /// # virtio-scsi0
+    /// {"execute":"device_add","arguments":{"driver":"virtio-scsi-pci","id":"virtio-scsi1","bus":"bus1"}}
+    /// {"return": {}}
+
+    /// {"execute":"blockdev_add", "arguments": {"file":"/path/to/block.image","format":"qcow2","id":"virtio-scsi0"}}
+    /// {"return": {}}
+    /// {"execute":"device_add","arguments":{"driver":"scsi-hd","drive":"virtio-scsi0","id":"scsi_device_0","bus":"virtio-scsi1.0"}}
+    /// {"return": {}}
+
+    /// # virtio-scsi1
+    /// {"execute":"device_add","arguments":{"driver":"virtio-scsi-pci","id":"virtio-scsi2","bus":"bus2"}}
+    /// {"return": {}}
+
+    /// {"execute":"blockdev_add", "arguments": {"file":"/path/to/block2.qcow2","format":"qcow2","id":"virtio-scsi1"}}
+    /// {"return": {}}
+    /// {"execute":"device_add","arguments":{"driver":"scsi-hd","drive":"virtio-scsi1","id":"scsi_device_1","bus":"virtio-scsi2.0"}}
+    pub fn hotplug_scsi_device(
+        &mut self,
+        block_driver: &str,
+        device_id: &str,
+        path_on_host: &str,
+        is_direct: Option<bool>,
+        is_readonly: bool,
+        no_drop: bool,
+    ) -> Result<Option<PciPath>> {
+        let (bus, _slot) = self.find_free_slot()?;
+
+        // device_add virtio_scsi controller
+        let controller_id = format!("virtio-scsi{}", device_id);
+        self.qmp
+            .execute(&qmp::device_add {
+                bus: Some(bus.clone()),
+                id: Some(controller_id.clone()),
+                driver: block_driver.to_string(), // "virtio-scsi-pci"
+                arguments: Dictionary::new(),
+            })
+            .map_err(|e| anyhow!("device_add virtio-scsi controller {:?}", e))
+            .map(|_| ())?;
+
+        //
+        // `blockdev-add`
+        let node_name = format!("scsi-drive-{}", device_id);
+        self.qmp
+            .execute(&qmp::blockdev_add(qmp::BlockdevOptions::raw {
+                base: qmp::BlockdevOptionsBase {
+                    detect_zeroes: None,
+                    cache: None,
+                    discard: None,
+                    force_share: None,
+                    auto_read_only: None,
+                    node_name: Some(node_name.clone()),
+                    read_only: None,
+                },
+                raw: qmp::BlockdevOptionsRaw {
+                    base: qmp::BlockdevOptionsGenericFormat {
+                        file: qmp::BlockdevRef::definition(Box::new(qmp::BlockdevOptions::file {
+                            base: qapi_qmp::BlockdevOptionsBase {
+                                auto_read_only: None,
+                                cache: if is_direct.is_none() {
+                                    None
+                                } else {
+                                    Some(qapi_qmp::BlockdevCacheOptions {
+                                        direct: is_direct,
+                                        no_flush: None,
+                                    })
+                                },
+                                detect_zeroes: None,
+                                discard: None,
+                                force_share: None,
+                                node_name: None,
+                                read_only: Some(is_readonly),
+                            },
+                            file: qapi_qmp::BlockdevOptionsFile {
+                                aio: None,
+                                aio_max_batch: None,
+                                drop_cache: if !no_drop { None } else { Some(no_drop) },
+                                locking: None,
+                                pr_manager: None,
+                                x_check_cache_dropped: None,
+                                filename: path_on_host.to_owned(),
+                            },
+                        })),
+                    },
+                    offset: None,
+                    size: None,
+                },
+            }))
+            .map_err(|e| anyhow!("blockdev_add {:?}", e))
+            .map(|_| ())?;
+
+        // `device_add`
+        // Add drivers for scsi passthrough like scsi-generic and scsi-block
+        // drivers := {"scsi-hd", "scsi-cd", "scsi-disk"}
+        let device_id = format!("scsi-device-{}", device_id);
+        let mut scsi_add_args = Dictionary::new();
+        scsi_add_args.insert("drive".to_owned(), node_name.clone().into());
+        self.qmp
+            .execute(&qmp::device_add {
+                bus: Some(format!("{}.0", controller_id)),
+                id: Some(device_id),
+                driver: "scsi-hd".to_string(),
+                arguments: scsi_add_args,
+            })
+            .map_err(|e| anyhow!("device_add scsi {:?}", e))
+            .map(|_| ())?;
+
+        let pci_path = self
+            .get_device_by_qdev_id(&node_name)
+            .context("get device by qdev_id failed")?;
+        info!(
+            sl!(),
+            "hotplug_scsi_device return pci path: {:?}", &pci_path
+        );
+
+        Ok(Some(pci_path))
+    }
+
     pub fn hotplug_vfio_device(
         &mut self,
         hostdev_id: &str,
