@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
+use serde::{Deserialize, Deserializer};
 use std::io::Result;
 
 use crate::config::{ConfigOps, TomlConfig};
@@ -115,7 +116,11 @@ pub struct Agent {
     /// This timeout value is used to set the maximum duration for the agent to process a CreateContainerRequest.
     /// It's also used to ensure that workloads, especially those involving large image pulls within the guest,
     /// have sufficient time to complete.
-    #[serde(default = "default_request_timeout", rename = "create_container_timeout")]
+    #[serde(
+        default = "default_request_timeout",
+        rename = "create_container_timeout",
+        deserialize_with = "deserialize_secs_to_millis"
+    )]
     pub request_timeout_ms: u32,
 
     /// Agent health check request timeout value in millisecond
@@ -143,6 +148,15 @@ pub struct Agent {
     /// Memory agent configuration
     #[serde(default)]
     pub mem_agent: MemAgent,
+}
+
+fn deserialize_secs_to_millis<'de, D>(deserializer: D) -> std::result::Result<u32, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let secs = u32::deserialize(deserializer)?;
+
+    Ok(secs.saturating_mul(1000))
 }
 
 impl std::default::Default for Agent {
