@@ -84,3 +84,6 @@ unbootable
 userspace
 eBPF
 dwarves
+passthroughfd
+passfd
+sendfd
