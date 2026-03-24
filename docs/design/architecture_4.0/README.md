@@ -259,57 +259,45 @@ Representing the core of the high-performance runtime, the `Builtin Dragonball` 
 The Kata Rust runtime features a modular design that supports diverse services, runtimes, and hypervisors. We utilize a registration mechanism to decouple service logic from the core runtime. At startup, the runtime resolves the required runtime handler and hypervisor types based on configuration.
 
 ```mermaid
-graph TD
-    Config["Runtime Configuration File"]
+graph LR
+    API["API"]
 
-    subgraph Registry["Registration Registry"]
-        SvcRegistry["Service Handlers Registry"]
-        RuntimeRegistry["Runtime Handlers Registry"]
-        HVRegistry["Hypervisor Handlers Registry"]
+    subgraph Services["Configurable Services"]
+        TaskSvc["Task Service"]
+        ImageSvc["Image Service"]
+        OtherSvc["Other Service"]
     end
 
-    subgraph ServiceImpls["Service Implementations"]
-        TaskServiceImpl["Task Service"]
+    Msg(["Message Dispatcher"])
+
+    subgraph Handlers["Configurable Runtime Handlers"]
+        WasmC["WasmContainer"]
+        VirtC["VirtContainer"]
+        LinuxC["LinuxContainer"]
     end
 
-    subgraph RuntimeImpls["Runtime Handler Implementations"]
-        VirtContainerImpl["VirtContainer"]
-        LinuxContainerImpl["LinuxContainer"]
-        WasmContainerImpl["WasmContainer"]
+    subgraph HVs["Configurable Hypervisors"]
+        DB["Dragonball"]
+        QEMU["QEMU"]
+        CH["Cloud Hypervisor"]
+        FC["Firecracker"]
     end
 
-    subgraph HypervisorImpls["Hypervisor Implementations"]
-        DragonballImpl["Dragonball"]
-        QemuImpl["QEMU"]
-        CloudHVImpl["Cloud Hypervisor"]
-        FirecrackerImpl["Firecracker"]
-    end
+    API --> Services
+    Services --> Msg
+    Msg --> Handlers
+    Handlers --> HVs
 
-    Config -->|"resolve service type"| SvcRegistry
-    Config -->|"resolve runtime handler type"| RuntimeRegistry
-    Config -->|"resolve hypervisor type"| HVRegistry
-
-    TaskServiceImpl -->|"registers"| SvcRegistry
-    VirtContainerImpl -->|"registers"| RuntimeRegistry
-    LinuxContainerImpl -->|"registers"| RuntimeRegistry
-    WasmContainerImpl -->|"registers"| RuntimeRegistry
-    DragonballImpl -->|"registers"| HVRegistry
-    QemuImpl -->|"registers"| HVRegistry
-    CloudHVImpl -->|"registers"| HVRegistry
-    FirecrackerImpl -->|"registers"| HVRegistry
-
-    SvcRegistry -->|"activate"| ActiveSvc["Active Service Handler"]
-    RuntimeRegistry -->|"activate"| ActiveRuntime["Active Runtime Handler"]
-    HVRegistry -->|"activate"| ActiveHV["Active Hypervisor Handler"]
-
-    classDef config fill:#e2d9f3,stroke:#6610f2,stroke-width:1px
-    classDef registry fill:#cce5ff,stroke:#004085,stroke-width:1px
-    classDef impl fill:#d4edda,stroke:#155724,stroke-width:1px
-    classDef active fill:#fff3cd,stroke:#856404,stroke-width:1px
-    class Config config
-    class SvcRegistry,RuntimeRegistry,HVRegistry registry
-    class TaskServiceImpl,VirtContainerImpl,LinuxContainerImpl,WasmContainerImpl,DragonballImpl,QemuImpl,CloudHVImpl,FirecrackerImpl impl
-    class ActiveSvc,ActiveRuntime,ActiveHV active
+    classDef api fill:#d0e8ff,stroke:#336,stroke-width:1px
+    classDef svc fill:#e2d9f3,stroke:#6610f2,stroke-width:1px
+    classDef msg fill:#fff3cd,stroke:#856404,stroke-width:1px
+    classDef handler fill:#d4edda,stroke:#155724,stroke-width:1px
+    classDef hv fill:#f8d7da,stroke:#721c24,stroke-width:1px
+    class API api
+    class TaskSvc,ImageSvc,OtherSvc svc
+    class Msg msg
+    class WasmC,VirtC,LinuxC handler
+    class DB,QEMU,CH,FC hv
 ```
 
 ### Modular Resource Manager
@@ -317,38 +305,43 @@ graph TD
 Managing diverse resources—from Virtio-fs volumes to Cgroup V2—is handled by an abstracted resource manager. Each resource type implements a common trait, enabling uniform lifecycle hooks and deterministic dependency resolution.
 
 ```mermaid
-graph TD
+graph LR
     RM["Resource Manager"]
 
-    subgraph SharedfsMgr["Sharedfs Manager"]
-        VirtioFS["Virtio-fs"]
-        Virtio9p["Virtio-9p"]
+    subgraph SandboxRes["Sandbox Resources"]
+        Network["Network Entity"]
+        SharedFs["Shared FS"]
     end
 
-    subgraph NetworkMgr["Network Manager"]
-        NetModels["Network Models / Interfaces"]
+    subgraph ContainerRes["Container Resources"]
+        Rootfs["Rootfs"]
+        Cgroup["Cgroup"]
+        Volume["Volume"]
     end
 
-    RootfsMgr["Rootfs Manager"]
-    VolumeMgr["Volume Manager"]
+    RM --> Network
+    RM --> SharedFs
+    RM --> Rootfs
+    RM --> Cgroup
+    RM --> Volume
 
-    subgraph CgroupMgr["Cgroup Manager"]
-        CgroupV1["Cgroup V1"]
-        CgroupV2["Cgroup V2"]
-    end
+    Network --> Endpoint["endpoint\n(veth / physical)"]
+    Network --> NetModel["model\n(tcfilter / route)"]
+    SharedFs --> InlineVirtioFs["inline virtiofs"]
+    SharedFs --> StandaloneVirtioFs["standalone virtiofs"]
 
-    RM -->|"prepare / update / cleanup"| SharedfsMgr
-    RM -->|"prepare / update / cleanup"| NetworkMgr
-    RM -->|"prepare / update / cleanup"| RootfsMgr
-    RM -->|"prepare / update / cleanup"| VolumeMgr
-    RM -->|"prepare / update / cleanup"| CgroupMgr
+    Rootfs --> RootfsTypes["block / virtiofs / nydus"]
+    Cgroup --> CgroupVers["v1 / v2"]
+    Volume --> VolumeTypes["sharefs / shm / local\nephemeral / direct / block"]
 
     classDef rm fill:#e2d9f3,stroke:#6610f2,stroke-width:2px
-    classDef resource fill:#d4edda,stroke:#155724,stroke-width:1px
+    classDef sandbox fill:#d0e8ff,stroke:#336,stroke-width:1px
+    classDef container fill:#d4edda,stroke:#155724,stroke-width:1px
     classDef impl fill:#fff3cd,stroke:#856404,stroke-width:1px
     class RM rm
-    class SharedfsMgr,NetworkMgr,RootfsMgr,VolumeMgr,CgroupMgr resource
-    class VirtioFS,Virtio9p,NetModels,CgroupV1,CgroupV2 impl
+    class Network,SharedFs sandbox
+    class Rootfs,Cgroup,Volume container
+    class Endpoint,NetModel,InlineVirtioFs,StandaloneVirtioFs,RootfsTypes,CgroupVers,VolumeTypes impl
 ```
 
 ### Asynchronous I/O Model
