@@ -23,9 +23,11 @@ graph TD
             dragonball["Dragonball VMM (library)"]
             helpers_bi["virtiofsd / nydusd"]
         end
+        subgraph guestvm_bi["Guest VM"]
+            agent_bi["kata-agent"]
+        end
         shimv2_bi --> shimv2_bi_inner
-        shimv2_bi_inner -->|"direct function calls"| guestvm_bi["Guest VM"]
-        guestvm_bi --> agent_bi["kata-agent"]
+        shimv2_bi_inner -->|"direct function calls"| guestvm_bi
     end
 
     subgraph OptionalVMM["Optional VMM (External Mode)"]
@@ -33,10 +35,12 @@ graph TD
         shimv2_ext["shimv2 process"]
         virtiofsd_ext["virtiofsd (helper)"]
         ext_vmm["External VMM process\n(QEMU / Cloud-Hypervisor / Firecracker)"]
+        subgraph guestvm_ext["Guest VM"]
+            agent_ext["kata-agent"]
+        end
         shimv2_ext -->|"fork + IPC/RPC"| ext_vmm
         shimv2_ext -->|"manages"| virtiofsd_ext
-        ext_vmm -->|"vsock / hybrid-vsock"| guestvm_ext["Guest VM"]
-        guestvm_ext --> agent_ext["kata-agent"]
+        ext_vmm -->|"vsock / hybrid-vsock"| guestvm_ext
     end
 
     shimv2 --> BuiltIn
@@ -96,8 +100,9 @@ The legacy Kata 2.x architecture relied on inter-process communication (IPC) bet
 graph LR
     subgraph HostProcess["Host: containerd-shim-kata-v2 (shimv2)"]
         shimv2["shimv2\nruntime logic"]
-        virtiofsd["virtiofsd\n(helper process)"]
     end
+
+    virtiofsd["virtiofsd\n(independent process)"]
 
     subgraph ExtVMMProc["External VMM Process (e.g., QEMU)"]
         vmm["VMM\n(QEMU / Cloud-Hypervisor\n/ Firecracker)"]
