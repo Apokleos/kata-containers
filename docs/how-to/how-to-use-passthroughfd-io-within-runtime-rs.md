@@ -21,7 +21,27 @@ Before the introduction of Passthrough-FD, Kata's IO streams were implemented us
 
 The data flow was as follows:
 
-![Legacy IO](./images/legacyIO.png)
+```mermaid
+flowchart LR
+    subgraph HOST["Host"]
+        containerd["Containerd"]
+        subgraph shim["kata-shim"]
+            direction TB
+            t1["thread\nbuffer"]
+            t2["thread\nbuffer"]
+            t3["thread\nbuffer"]
+        end
+        containerd -->|"stdin"| t1
+        containerd -->|"stdout"| t2
+        containerd -->|"stderr"| t3
+    end
+    subgraph VM["VM"]
+        agent["kata-agent"]
+        container["container"]
+        agent --> container
+    end
+    t1 & t2 & t3 -->|"ttrpc over vsock"| agent
+```
 
 The kata-shim (containerd-shim-kata-v2) on the Host opens the FIFO pipes provided by containerd via the shimv2 interface.
 This results in three FDs (stdin, stdout, and stderr).
@@ -34,7 +54,20 @@ This multi-threaded proxying and buffering in the shim layer introduced signific
 
 Passthrough-FD technology enhances the Dragonball VMM's hybrid-vsock implementation with support for recv-fd.
 
-![passthrough-fd IO](./images/passthroughfd-IO.png)
+```mermaid
+flowchart LR
+    subgraph HOST["Host"]
+        containerd["Containerd"]
+        shim["kata-shim"]
+        containerd -->|"stdin / stdout / stderr"| shim
+    end
+    subgraph VM["VM"]
+        agent["kata-agent"]
+        container["container"]
+        agent --> container
+    end
+    shim -->|"-stdin- (passthrough FD)"| agent
+```
 
 Instead of requiring an intermediate layer to read and forward data, the hybrid-vsock module can now directly receive file descriptors from the Host. This allows the system to "pass through" the host's FDs directly to the kata-agent. By eliminating the proxying logic in kata-shim, the IO stream is effectively connected directly to the guest environment.
 
@@ -42,7 +75,25 @@ Instead of requiring an intermediate layer to read and forward data, the hybrid-
 
 The end-to-end process follows these steps:
 
-![passthrough-fd IO workflow](./images/passthroughfd-IO-workflow.png)
+```mermaid
+sequenceDiagram
+    participant S as Server (Guest)
+    participant V as AF_VSOCK socket
+    participant H as Dragonball Hybrid Vsock device
+    participant D as Dragonball Process (AF_UNIX socket)
+    participant C as Client (Host)
+    participant F as File or FIFO
+
+    Note over S: 1. Create socket, bind()<br/>and listen() on PortA
+    C->>F: 2. open() to acquire a Fd
+    C->>D: 3. connect(), send("passfd\n")
+    C->>D: send_with_fd(Fd, PortA)
+    D->>H: forward to PortA
+    H->>V: connect via AF_VSOCK
+    V->>S: 4. accept()
+    D-->>C: 5. read() "OK <host port>"
+    Note over H,D: 6. The uds stream closes,<br/>and the Fd is owned by Dragonball
+```
 
 1. Agent Initialization: The kata-agent starts a server listening on the port specified by passfd_listener_port.
 2. FD Transfer: During the container creation phase, the kata-shim sends the FDs for stdin, stdout, and stderr to the Dragonball hybrid-vsock module using the sendfd mechanism.
