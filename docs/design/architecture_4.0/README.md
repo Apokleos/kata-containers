@@ -12,7 +12,43 @@ By consolidating the entire runtime into a single, high-performance binary, Kata
 
 The Kata Containers Rust Runtime is designed to minimize resource overhead and startup latency. It achieves this by shifting from traditional process-based management to a more integrated, Rust-native control flow.
 
-![architecture](./images/kata4.0-arch.png)
+```mermaid
+graph TD
+    containerd["containerd"] --> shimv2["containerd-shim-kata-v2 (shimv2)"]
+
+    subgraph BuiltIn["Built-in VMM (Integrated Mode)"]
+        direction TD
+        shimv2_bi["shimv2 process"]
+        subgraph shimv2_bi_inner["Single Process"]
+            dragonball["Dragonball VMM (library)"]
+            helpers_bi["virtiofsd / nydusd"]
+        end
+        shimv2_bi --> shimv2_bi_inner
+        shimv2_bi_inner -->|"direct function calls"| guestvm_bi["Guest VM"]
+        guestvm_bi --> agent_bi["kata-agent"]
+    end
+
+    subgraph OptionalVMM["Optional VMM (External Mode)"]
+        direction TD
+        shimv2_ext["shimv2 process"]
+        virtiofsd_ext["virtiofsd (helper)"]
+        ext_vmm["External VMM process\n(QEMU / Cloud-Hypervisor / Firecracker)"]
+        shimv2_ext -->|"fork + IPC/RPC"| ext_vmm
+        shimv2_ext -->|"manages"| virtiofsd_ext
+        ext_vmm -->|"vsock / hybrid-vsock"| guestvm_ext["Guest VM"]
+        guestvm_ext --> agent_ext["kata-agent"]
+    end
+
+    shimv2 --> BuiltIn
+    shimv2 --> OptionalVMM
+
+    classDef process fill:#d0e8ff,stroke:#336,stroke-width:1px
+    classDef vm fill:#d4edda,stroke:#155724,stroke-width:1px
+    classDef agent fill:#fff3cd,stroke:#856404,stroke-width:1px
+    class shimv2,shimv2_bi,shimv2_ext,dragonball,helpers_bi,virtiofsd_ext,ext_vmm process
+    class guestvm_bi,guestvm_ext vm
+    class agent_bi,agent_ext agent
+```
 
 The runtime employs a **flexible VMM strategy**, supporting both `built-in` and `optional` VMMs. This allows users to choose between a tightly integrated VMM (e.g., Dragonball) for peak performance, or external options (e.g., QEMU, Cloud-Hypervisor, Firecracker) for enhanced compatibility and modularity.
 
@@ -56,9 +92,54 @@ In this mode, the runtime and the VMM operate as separate, decoupled processes. 
 
 The legacy Kata 2.x architecture relied on inter-process communication (IPC) between the runtime and the VMM. This introduced context-switching latency and complex error-recovery requirements across process boundaries. In contrast, the built-in VMM approach embeds the VMM directly within the runtime's process space. This eliminates IPC overhead, allowing for direct function calls and shared memory access, resulting in significantly reduced startup times and improved performance.
 
-![not_builtin_vmm](./images/not_built_in_vmm.png)
+```mermaid
+graph LR
+    subgraph HostProcess["Host: containerd-shim-kata-v2 (shimv2)"]
+        shimv2["shimv2\nruntime logic"]
+        virtiofsd["virtiofsd\n(helper process)"]
+    end
 
-![builtin_vmm](./images/built_in_vmm.png)
+    subgraph ExtVMMProc["External VMM Process (e.g., QEMU)"]
+        vmm["VMM\n(QEMU / Cloud-Hypervisor\n/ Firecracker)"]
+    end
+
+    subgraph GuestVM["Guest VM"]
+        agent["kata-agent"]
+    end
+
+    shimv2 -->|"fork + IPC / RPC"| vmm
+    shimv2 -->|"manages"| virtiofsd
+    vmm -->|"vsock / hybrid-vsock"| GuestVM
+
+    classDef proc fill:#d0e8ff,stroke:#336,stroke-width:1px
+    classDef vm fill:#d4edda,stroke:#155724,stroke-width:1px
+    classDef ag fill:#fff3cd,stroke:#856404,stroke-width:1px
+    class shimv2,virtiofsd,vmm proc
+    class agent ag
+```
+
+```mermaid
+graph LR
+    subgraph SingleProcess["Single Process: containerd-shim-kata-v2 (shimv2)"]
+        shimv2["shimv2\nruntime logic"]
+        dragonball["Dragonball VMM\n(library)"]
+        helpers["virtiofsd / nydusd\n(integrated)"]
+        shimv2 -->|"direct function calls"| dragonball
+        shimv2 -->|"direct function calls"| helpers
+    end
+
+    subgraph GuestVM["Guest VM"]
+        agent["kata-agent"]
+    end
+
+    dragonball -->|"manages"| GuestVM
+
+    classDef proc fill:#d0e8ff,stroke:#336,stroke-width:1px
+    classDef vm fill:#d4edda,stroke:#155724,stroke-width:1px
+    classDef ag fill:#fff3cd,stroke:#856404,stroke-width:1px
+    class shimv2,dragonball,helpers proc
+    class agent ag
+```
 
 By integrating Dragonball directly as a library, we eliminate the need for heavy IPC.
 
@@ -69,7 +150,65 @@ By integrating Dragonball directly as a library, we eliminate the need for heavy
 
 The Kata 4.0 runtime utilizes a highly modular, layered architecture designed to decouple high-level service requests from low-level infrastructure execution. This design facilitates extensibility, allowing the system to support diverse container types and dragonball within a single, unified Rust binary and also support other hypervisors  as optional VMMs.
 
-![architecture](./images/architecture.png)
+```mermaid
+graph TD
+    subgraph L1["Layer 1 — Service & Orchestration Layer"]
+        TaskSvc["Task Service"]
+        ImageSvc["Image Service"]
+        OtherSvc["Other Services"]
+        Dispatcher["Message Dispatcher"]
+        TaskSvc --> Dispatcher
+        ImageSvc --> Dispatcher
+        OtherSvc --> Dispatcher
+    end
+
+    subgraph L2["Layer 2 — Management & Handler Layer"]
+        subgraph RuntimeHandler["Runtime Handler"]
+            SandboxMgr["Sandbox Manager"]
+            ContainerMgr["Container Manager"]
+        end
+        subgraph ContainerAbstractions["Container Abstractions"]
+            LinuxContainer["LinuxContainer"]
+            VirtContainer["VirtContainer"]
+            WasmContainer["WasmContainer"]
+        end
+    end
+
+    subgraph L3["Layer 3 — Infrastructure Abstraction Layer"]
+        subgraph HypervisorIface["Hypervisor Interface"]
+            Qemu["Qemu"]
+            CloudHV["Cloud Hypervisor"]
+            Firecracker["Firecracker"]
+            Dragonball["Dragonball"]
+        end
+        subgraph ResourceMgr["Resource Manager"]
+            Sharedfs["Sharedfs"]
+            Network["Network"]
+            Rootfs["Rootfs"]
+            Volume["Volume"]
+            Cgroup["Cgroup"]
+        end
+    end
+
+    subgraph L4["Layer 4 — Built-in Dragonball VMM Layer"]
+        BuiltinDB["Builtin Dragonball"]
+    end
+
+    Dispatcher --> RuntimeHandler
+    RuntimeHandler --> ContainerAbstractions
+    ContainerAbstractions --> HypervisorIface
+    ContainerAbstractions --> ResourceMgr
+    Dragonball --> BuiltinDB
+
+    classDef svc fill:#cce5ff,stroke:#004085,stroke-width:1px
+    classDef handler fill:#d4edda,stroke:#155724,stroke-width:1px
+    classDef infra fill:#fff3cd,stroke:#856404,stroke-width:1px
+    classDef builtin fill:#f8d7da,stroke:#721c24,stroke-width:1px
+    class TaskSvc,ImageSvc,OtherSvc,Dispatcher svc
+    class SandboxMgr,ContainerMgr,LinuxContainer,VirtContainer,WasmContainer handler
+    class Qemu,CloudHV,Firecracker,Dragonball,Sharedfs,Network,Rootfs,Volume,Cgroup infra
+    class BuiltinDB builtin
+```
 
 #### Service & Orchestration Layer
 
@@ -114,13 +253,98 @@ Representing the core of the high-performance runtime, the `Builtin Dragonball` 
 
 The Kata Rust runtime features a modular design that supports diverse services, runtimes, and hypervisors. We utilize a registration mechanism to decouple service logic from the core runtime. At startup, the runtime resolves the required runtime handler and hypervisor types based on configuration.
 
-![framework](./images/framework.png)
+```mermaid
+graph TD
+    Config["Runtime Configuration File"]
+
+    subgraph Registry["Registration Registry"]
+        SvcRegistry["Service Handlers Registry"]
+        RuntimeRegistry["Runtime Handlers Registry"]
+        HVRegistry["Hypervisor Handlers Registry"]
+    end
+
+    subgraph ServiceImpls["Service Implementations"]
+        TaskServiceImpl["Task Service"]
+    end
+
+    subgraph RuntimeImpls["Runtime Handler Implementations"]
+        VirtContainerImpl["VirtContainer"]
+        LinuxContainerImpl["LinuxContainer"]
+        WasmContainerImpl["WasmContainer"]
+    end
+
+    subgraph HypervisorImpls["Hypervisor Implementations"]
+        DragonballImpl["Dragonball"]
+        QemuImpl["QEMU"]
+        CloudHVImpl["Cloud Hypervisor"]
+        FirecrackerImpl["Firecracker"]
+    end
+
+    Config -->|"resolve service type"| SvcRegistry
+    Config -->|"resolve runtime handler type"| RuntimeRegistry
+    Config -->|"resolve hypervisor type"| HVRegistry
+
+    TaskServiceImpl -->|"registers"| SvcRegistry
+    VirtContainerImpl -->|"registers"| RuntimeRegistry
+    LinuxContainerImpl -->|"registers"| RuntimeRegistry
+    WasmContainerImpl -->|"registers"| RuntimeRegistry
+    DragonballImpl -->|"registers"| HVRegistry
+    QemuImpl -->|"registers"| HVRegistry
+    CloudHVImpl -->|"registers"| HVRegistry
+    FirecrackerImpl -->|"registers"| HVRegistry
+
+    SvcRegistry -->|"activate"| ActiveSvc["Active Service Handler"]
+    RuntimeRegistry -->|"activate"| ActiveRuntime["Active Runtime Handler"]
+    HVRegistry -->|"activate"| ActiveHV["Active Hypervisor Handler"]
+
+    classDef config fill:#e2d9f3,stroke:#6610f2,stroke-width:1px
+    classDef registry fill:#cce5ff,stroke:#004085,stroke-width:1px
+    classDef impl fill:#d4edda,stroke:#155724,stroke-width:1px
+    classDef active fill:#fff3cd,stroke:#856404,stroke-width:1px
+    class Config config
+    class SvcRegistry,RuntimeRegistry,HVRegistry registry
+    class TaskServiceImpl,VirtContainerImpl,LinuxContainerImpl,WasmContainerImpl,DragonballImpl,QemuImpl,CloudHVImpl,FirecrackerImpl impl
+    class ActiveSvc,ActiveRuntime,ActiveHV active
+```
 
 ### Modular Resource Manager
 
 Managing diverse resources—from Virtio-fs volumes to Cgroup V2—is handled by an abstracted resource manager. Each resource type implements a common trait, enabling uniform lifecycle hooks and deterministic dependency resolution.
 
-![resource manager](./images/resourceManager.png)
+```mermaid
+graph TD
+    RM["Resource Manager"]
+
+    subgraph SharedfsMgr["Sharedfs Manager"]
+        VirtioFS["Virtio-fs"]
+        Virtio9p["Virtio-9p"]
+    end
+
+    subgraph NetworkMgr["Network Manager"]
+        NetModels["Network Models / Interfaces"]
+    end
+
+    RootfsMgr["Rootfs Manager"]
+    VolumeMgr["Volume Manager"]
+
+    subgraph CgroupMgr["Cgroup Manager"]
+        CgroupV1["Cgroup V1"]
+        CgroupV2["Cgroup V2"]
+    end
+
+    RM -->|"prepare / update / cleanup"| SharedfsMgr
+    RM -->|"prepare / update / cleanup"| NetworkMgr
+    RM -->|"prepare / update / cleanup"| RootfsMgr
+    RM -->|"prepare / update / cleanup"| VolumeMgr
+    RM -->|"prepare / update / cleanup"| CgroupMgr
+
+    classDef rm fill:#e2d9f3,stroke:#6610f2,stroke-width:2px
+    classDef resource fill:#d4edda,stroke:#155724,stroke-width:1px
+    classDef impl fill:#fff3cd,stroke:#856404,stroke-width:1px
+    class RM rm
+    class SharedfsMgr,NetworkMgr,RootfsMgr,VolumeMgr,CgroupMgr resource
+    class VirtioFS,Virtio9p,NetModels,CgroupV1,CgroupV2 impl
+```
 
 ### Asynchronous I/O Model
 
