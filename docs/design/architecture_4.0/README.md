@@ -157,62 +157,82 @@ The Kata 4.0 runtime utilizes a highly modular, layered architecture designed to
 
 ```mermaid
 graph TD
-    subgraph L1["Layer 1 — Service & Orchestration Layer"]
-        TaskSvc["Task Service"]
-        ImageSvc["Image Service"]
-        OtherSvc["Other Services"]
-        Dispatcher["Message Dispatcher"]
-        TaskSvc --> Dispatcher
-        ImageSvc --> Dispatcher
-        OtherSvc --> Dispatcher
+    subgraph SVC["Service"]
+        direction LR
+        TS["task service"] ~~~ IS["image service"] ~~~ OS["other service"]
     end
 
-    subgraph L2["Layer 2 — Management & Handler Layer"]
-        subgraph RuntimeHandler["Runtime Handler"]
-            SandboxMgr["Sandbox Manager"]
-            ContainerMgr["Container Manager"]
-        end
-        subgraph ContainerAbstractions["Container Abstractions"]
-            LinuxContainer["LinuxContainer"]
-            VirtContainer["VirtContainer"]
-            WasmContainer["WasmContainer"]
-        end
-    end
+    MD["Message Dispatcher"]
 
-    subgraph L3["Layer 3 — Infrastructure Abstraction Layer"]
-        subgraph HypervisorIface["Hypervisor Interface"]
-            Qemu["Qemu"]
-            CloudHV["Cloud Hypervisor"]
-            Firecracker["Firecracker"]
-            Dragonball["Dragonball"]
+    subgraph RH["Runtime Handler"]
+        direction TB
+        subgraph Mgrs[" "]
+            direction LR
+            SM["Sandbox Manager"] ~~~ CM["Container Manager"]
         end
-        subgraph ResourceMgr["Resource Manager"]
-            Sharedfs["Sharedfs"]
-            Network["Network"]
-            Rootfs["Rootfs"]
-            Volume["Volume"]
-            Cgroup["Cgroup"]
+        subgraph Ctrs[" "]
+            direction LR
+            LC["LinuxContainer"] ~~~ VC["VirtContainer"] ~~~ WC["WasmContainer"]
+        end
+        subgraph HV["Hypervisor"]
+            direction LR
+            QM["Qemu"] ~~~ CH["Cloud HV"] ~~~ FC["Firecracker"] ~~~ DB["Dragonball"]
+        end
+        subgraph RM["Resource"]
+            direction LR
+            SFS["Sharedfs"] ~~~ NW["Network"] ~~~ RF["Rootfs"] ~~~ VL["Volume"] ~~~ CG["cgroup"]
         end
     end
 
-    subgraph L4["Layer 4 — Built-in Dragonball VMM Layer"]
-        BuiltinDB["Builtin Dragonball"]
+    subgraph BDB["Builtin Dragonball"]
+        direction LR
+        subgraph SYS[" "]
+            direction TB
+            IOM["I/O Manager"]
+            ASM["Addr Space Mgr"]
+            RMG["Resource Mgr"]
+            UC["Upcall"]
+            TP["Template"]
+        end
+        subgraph CORE[" "]
+            direction TB
+            VMM["VMM"]
+            subgraph DM["Device Manager"]
+                direction LR
+                VF["virtio-fs"] ~~~ VM["virtio-mmio"] ~~~ VB["virtio-block"] ~~~ VN["virtio-net"] ~~~ VS["virtio-vsock"] ~~~ VH["vhost device"] ~~~ PD["pci devices"] ~~~ LD["legacy devices"] ~~~ HD["hotplug devices"]
+            end
+        end
+        subgraph CPU[" "]
+            direction TB
+            VCPU["vCPU"]
+            VCH["vCPU Hotplug"]
+        end
     end
 
-    Dispatcher --> RuntimeHandler
-    RuntimeHandler --> ContainerAbstractions
-    ContainerAbstractions --> HypervisorIface
-    ContainerAbstractions --> ResourceMgr
-    Dragonball --> BuiltinDB
+    SVC --> MD
+    MD --> RH
+    DB -.-> BDB
 
-    classDef svc fill:#cce5ff,stroke:#004085,stroke-width:1px
-    classDef handler fill:#d4edda,stroke:#155724,stroke-width:1px
-    classDef infra fill:#fff3cd,stroke:#856404,stroke-width:1px
-    classDef builtin fill:#f8d7da,stroke:#721c24,stroke-width:1px
-    class TaskSvc,ImageSvc,OtherSvc,Dispatcher svc
-    class SandboxMgr,ContainerMgr,LinuxContainer,VirtContainer,WasmContainer handler
-    class Qemu,CloudHV,Firecracker,Dragonball,Sharedfs,Network,Rootfs,Volume,Cgroup infra
-    class BuiltinDB builtin
+    classDef svc fill:#fde8d8,stroke:#c86d3e,stroke-width:1px
+    classDef msg fill:#f0f0f0,stroke:#555,stroke-width:1px
+    classDef mgr fill:#c5cae9,stroke:#3949ab,stroke-width:1px
+    classDef ctr fill:#ffffff,stroke:#888,stroke-width:1px,stroke-dasharray:5 3
+    classDef virt fill:#c8e6c9,stroke:#388e3c,stroke-width:1px
+    classDef hv fill:#b2dfdb,stroke:#00796b,stroke-width:1px
+    classDef res fill:#b2ebf2,stroke:#0097a7,stroke-width:1px
+    classDef vmm fill:#81c784,stroke:#2e7d32,stroke-width:2px
+    classDef dev fill:#fff9c4,stroke:#f57f17,stroke-width:1px
+    classDef sys fill:#f5f5f5,stroke:#9e9e9e,stroke-width:1px
+    class TS,IS,OS svc
+    class MD msg
+    class SM,CM mgr
+    class LC,WC ctr
+    class VC virt
+    class QM,CH,FC,DB hv
+    class SFS,NW,RF,VL,CG res
+    class VMM vmm
+    class VF,VM,VB,VN,VS,VH,PD,LD,HD dev
+    class IOM,ASM,RMG,UC,TP,VCPU,VCH sys
 ```
 
 #### Service & Orchestration Layer
