@@ -23,11 +23,12 @@ graph TD
             subgraph dragonball["Dragonball VMM (library)"]
                 helpers_bi["virtiofsd / nydusd\n(builtin)"]
             end
+            runtime_bi -->|"direct function calls"| dragonball
         end
         subgraph guestvm_bi["Guest VM"]
             agent_bi["kata-agent"]
         end
-        shimv2_bi -->|"direct function calls"| guestvm_bi
+        shimv2_bi -->|"hybrid-vsock"| guestvm_bi
     end
 
     subgraph OptionalVMM["Optional VMM (External Mode)"]
@@ -137,7 +138,7 @@ graph LR
         agent["kata-agent"]
     end
 
-    dragonball -->|"manages"| GuestVM
+    dragonball -->|"hybrid-vsock"| GuestVM
 
     classDef proc fill:#d0e8ff,stroke:#336,stroke-width:1px
     classDef vm fill:#d4edda,stroke:#155724,stroke-width:1px
