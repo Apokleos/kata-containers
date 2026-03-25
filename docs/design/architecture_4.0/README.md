@@ -20,8 +20,9 @@ graph TD
         direction TD
         shimv2_bi["shimv2 process"]
         subgraph shimv2_bi_inner["Single Process"]
-            dragonball["Dragonball VMM (library)"]
-            helpers_bi["virtiofsd / nydusd"]
+            subgraph dragonball["Dragonball VMM (library)"]
+                helpers_bi["virtiofsd / nydusd\n(builtin)"]
+            end
         end
         subgraph guestvm_bi["Guest VM"]
             agent_bi["kata-agent"]
@@ -49,7 +50,7 @@ graph TD
     classDef process fill:#d0e8ff,stroke:#336,stroke-width:1px
     classDef vm fill:#d4edda,stroke:#155724,stroke-width:1px
     classDef agent fill:#fff3cd,stroke:#856404,stroke-width:1px
-    class shimv2,shimv2_bi,shimv2_ext,dragonball,helpers_bi,virtiofsd_ext,ext_vmm process
+    class shimv2,shimv2_bi,shimv2_ext,helpers_bi,virtiofsd_ext,ext_vmm process
     class guestvm_bi,guestvm_ext vm
     class agent_bi,agent_ext agent
 ```
@@ -127,10 +128,10 @@ graph LR
 graph LR
     subgraph SingleProcess["Single Process: containerd-shim-kata-v2 (shimv2)"]
         shimv2["shimv2\nruntime logic"]
-        dragonball["Dragonball VMM\n(library)"]
-        helpers["virtiofsd / nydusd\n(integrated)"]
+        subgraph dragonball["Dragonball VMM (library)"]
+            helpers["virtiofsd / nydusd\n(builtin)"]
+        end
         shimv2 -->|"direct function calls"| dragonball
-        shimv2 -->|"direct function calls"| helpers
     end
 
     subgraph GuestVM["Guest VM"]
@@ -142,7 +143,7 @@ graph LR
     classDef proc fill:#d0e8ff,stroke:#336,stroke-width:1px
     classDef vm fill:#d4edda,stroke:#155724,stroke-width:1px
     classDef ag fill:#fff3cd,stroke:#856404,stroke-width:1px
-    class shimv2,dragonball,helpers proc
+    class shimv2,helpers proc
     class agent ag
 ```
 
