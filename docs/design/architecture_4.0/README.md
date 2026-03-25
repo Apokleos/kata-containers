@@ -18,8 +18,8 @@ graph TD
 
     subgraph BuiltIn["Built-in VMM (Integrated Mode)"]
         direction TD
-        shimv2_bi["shimv2 process"]
-        subgraph shimv2_bi_inner["Single Process"]
+        subgraph shimv2_bi["shimv2 process (Single Process)"]
+            runtime_bi["shimv2 runtime logic"]
             subgraph dragonball["Dragonball VMM (library)"]
                 helpers_bi["virtiofsd / nydusd\n(builtin)"]
             end
@@ -27,8 +27,7 @@ graph TD
         subgraph guestvm_bi["Guest VM"]
             agent_bi["kata-agent"]
         end
-        shimv2_bi --> shimv2_bi_inner
-        shimv2_bi_inner -->|"direct function calls"| guestvm_bi
+        shimv2_bi -->|"direct function calls"| guestvm_bi
     end
 
     subgraph OptionalVMM["Optional VMM (External Mode)"]
@@ -50,7 +49,7 @@ graph TD
     classDef process fill:#d0e8ff,stroke:#336,stroke-width:1px
     classDef vm fill:#d4edda,stroke:#155724,stroke-width:1px
     classDef agent fill:#fff3cd,stroke:#856404,stroke-width:1px
-    class shimv2,shimv2_bi,shimv2_ext,helpers_bi,virtiofsd_ext,ext_vmm process
+    class shimv2,runtime_bi,shimv2_ext,helpers_bi,virtiofsd_ext,ext_vmm process
     class guestvm_bi,guestvm_ext vm
     class agent_bi,agent_ext agent
 ```
