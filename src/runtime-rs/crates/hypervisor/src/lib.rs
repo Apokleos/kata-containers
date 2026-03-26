@@ -115,7 +115,7 @@ pub trait Hypervisor: std::fmt::Debug + Send + Sync {
     async fn resize_memory(&self, new_mem_mb: u32) -> Result<(u32, MemoryConfig)>;
 
     // device manager
-    async fn add_device(&self, device: DeviceType) -> Result<DeviceType>;
+    async fn add_device(&self, device: DeviceType) -> Result<()>;
     async fn remove_device(&self, device: DeviceType) -> Result<()>;
     async fn update_device(&self, device: DeviceType) -> Result<()>;
 

@@ -5,6 +5,7 @@ members = [
     "logging",
     "mem-agent",
     "protocols",
+    "pod-resources-rs",
     "runtime-spec",
     "safe-path",
     "shim-interface",

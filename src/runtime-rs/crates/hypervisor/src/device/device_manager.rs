@@ -4,7 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
 use anyhow::{anyhow, Context, Result};
 use kata_sys_util::rand::RandomBytes;
@@ -12,7 +12,8 @@ use kata_types::config::hypervisor::{BlockDeviceInfo, TopologyConfigInfo, VIRTIO
 use tokio::sync::{Mutex, RwLock};
 
 use crate::{
-    vhost_user_blk::VhostUserBlkDevice, BlockConfig, BlockDevice, HybridVsockDevice, Hypervisor,
+    vfio_device::VfioDeviceModernHandle, vhost_user_blk::VhostUserBlkDevice, BlockConfig,
+    BlockConfigModern, BlockDevice, BlockDeviceModernHandle, HybridVsockDevice, Hypervisor,
     NetworkDevice, PCIePortDevice, ProtectionDevice, ShareFsDevice, VfioDevice, VhostUserConfig,
     VhostUserNetDevice, VsockDevice, KATA_BLK_DEV_TYPE, KATA_CCW_DEV_TYPE, KATA_MMIO_BLK_DEV_TYPE,
     KATA_NVDIMM_DEV_TYPE, KATA_SCSI_DEV_TYPE, VIRTIO_BLOCK_CCW, VIRTIO_BLOCK_MMIO,
@@ -231,6 +232,19 @@ impl DeviceManager {
                         return Some(device_id.to_string());
                     }
                 }
+                DeviceType::VfioModern(device) => {
+                    // device is an Arc<Mutex<VfioDeviceModern>>; lock it to access vfio_config
+                    if device.lock().await.config.iommu_group_devnode
+                        == PathBuf::from(host_path.clone())
+                    {
+                        return Some(device_id.to_string());
+                    }
+                }
+                DeviceType::BlockModern(device) => {
+                    if device.lock().await.config.path_on_host == host_path.clone() {
+                        return Some(device_id.to_string());
+                    }
+                }
                 DeviceType::VhostUserBlk(device) => {
                     if device.config.socket_path == host_path {
                         return Some(device_id.to_string());
@@ -301,6 +315,17 @@ impl DeviceManager {
                     .await
                     .context("failed to create device")?
             }
+            DeviceConfig::BlockCfgModern(config) => {
+                // try to find the device, if found and just return id.
+                if let Some(device_matched_id) = self.find_device(config.path_on_host.clone()).await
+                {
+                    return Ok(device_matched_id);
+                }
+
+                self.create_block_device_modern(config, device_id.clone())
+                    .await
+                    .context("failed to create block device modern")?
+            }
             DeviceConfig::VfioCfg(config) => {
                 let mut vfio_dev_config = config.clone();
                 let dev_host_path = vfio_dev_config.host_path.clone();
@@ -313,6 +338,22 @@ impl DeviceManager {
                 Arc::new(Mutex::new(VfioDevice::new(
                     device_id.clone(),
                     &vfio_dev_config,
+                )?))
+            }
+            DeviceConfig::VfioModernCfg(config) => {
+                let dev_host_path = config.host_path.clone();
+                if let Some(device_matched_id) = self.find_device(dev_host_path.clone()).await {
+                    return Ok(device_matched_id);
+                }
+
+                let virt_path = self.get_dev_virt_path(&config.dev_type, false)?;
+                let mut vfio_base = config.clone();
+                vfio_base.iommu_group_devnode = PathBuf::from(dev_host_path);
+                vfio_base.virt_path = virt_path;
+
+                Arc::new(Mutex::new(VfioDeviceModernHandle::new(
+                    device_id.clone(),
+                    &vfio_base,
                 )?))
             }
             DeviceConfig::VhostUserBlkCfg(config) => {
@@ -442,6 +483,61 @@ impl DeviceManager {
         Ok(Arc::new(Mutex::new(VhostUserBlkDevice::new(
             device_id,
             vhu_blk_config,
+        ))))
+    }
+
+    async fn create_block_device_modern(
+        &mut self,
+        config: &BlockConfigModern,
+        device_id: String,
+    ) -> Result<ArcMutexDevice> {
+        let mut block_config = config.clone();
+        let mut is_pmem = false;
+
+        match block_config.driver_option.as_str() {
+            // convert the block driver to kata type
+            VIRTIO_BLOCK_MMIO => {
+                block_config.driver_option = KATA_MMIO_BLK_DEV_TYPE.to_string();
+            }
+            VIRTIO_BLOCK_PCI => {
+                block_config.driver_option = KATA_BLK_DEV_TYPE.to_string();
+            }
+            VIRTIO_BLOCK_CCW => {
+                block_config.driver_option = KATA_CCW_DEV_TYPE.to_string();
+            }
+            VIRTIO_PMEM => {
+                block_config.driver_option = KATA_NVDIMM_DEV_TYPE.to_string();
+                is_pmem = true;
+            }
+            VIRTIO_SCSI => {
+                block_config.driver_option = KATA_SCSI_DEV_TYPE.to_string();
+            }
+            _ => {
+                return Err(anyhow!(
+                    "unsupported driver type {}",
+                    block_config.driver_option
+                ));
+            }
+        };
+
+        // generate virt path
+        if let Some(virt_path) = self.get_dev_virt_path(DEVICE_TYPE_BLOCK, is_pmem)? {
+            block_config.index = virt_path.0;
+            block_config.virt_path = virt_path.1;
+        }
+
+        // if the path on host is empty, we need to get device host path from the device major and minor number
+        // Otherwise, it might be rawfile based block device, the host path is already passed from the runtime,
+        // so we don't need to do anything here.
+        if block_config.path_on_host.is_empty() {
+            block_config.path_on_host =
+                get_host_path(DEVICE_TYPE_BLOCK, config.major, config.minor)
+                    .context("failed to get host path")?;
+        }
+
+        Ok(Arc::new(Mutex::new(BlockDeviceModernHandle::new(
+            device_id,
+            block_config,
         ))))
     }
 

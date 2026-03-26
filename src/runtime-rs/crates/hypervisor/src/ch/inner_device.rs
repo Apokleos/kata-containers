@@ -45,7 +45,7 @@ pub const DEFAULT_FS_QUEUES: usize = 1;
 const DEFAULT_FS_QUEUE_SIZE: u16 = 1024;
 
 impl CloudHypervisorInner {
-    pub(crate) async fn add_device(&mut self, device: DeviceType) -> Result<DeviceType> {
+    pub(crate) async fn add_device(&mut self, device: DeviceType) -> Result<()> {
         if self.state != VmmState::VmRunning {
             // If the VM is not running, add the device to the pending list to
             // be handled later.
@@ -80,10 +80,12 @@ impl CloudHypervisorInner {
                 }
             }
 
-            return Ok(device);
+            return Ok(());
         }
 
-        self.handle_add_device(device).await
+        let _devicex = self.handle_add_device(device).await?;
+
+        Ok(())
     }
 
     async fn handle_add_device(&mut self, device: DeviceType) -> Result<DeviceType> {

@@ -6,6 +6,7 @@
 mod cmdline_generator;
 mod inner;
 mod qmp;
+// mod extra2;
 
 use crate::device::DeviceType;
 use crate::hypervisor_persist::HypervisorState;
@@ -105,7 +106,7 @@ impl Hypervisor for Qemu {
         inner.save_vm().await
     }
 
-    async fn add_device(&self, device: DeviceType) -> Result<DeviceType> {
+    async fn add_device(&self, device: DeviceType) -> Result<()> {
         let mut inner = self.inner.write().await;
         inner.add_device(device).await
     }

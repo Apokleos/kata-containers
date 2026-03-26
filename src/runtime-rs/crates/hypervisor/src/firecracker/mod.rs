@@ -110,12 +110,9 @@ impl Hypervisor for Firecracker {
         inner.save_vm().await
     }
 
-    async fn add_device(&self, device: DeviceType) -> Result<DeviceType> {
+    async fn add_device(&self, device: DeviceType) -> Result<()> {
         let mut inner = self.inner.write().await;
-        match inner.add_device(device.clone()).await {
-            Ok(_) => Ok(device),
-            Err(err) => Err(err),
-        }
+        inner.add_device(device.clone()).await
     }
 
     async fn remove_device(&self, device: DeviceType) -> Result<()> {

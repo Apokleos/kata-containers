@@ -38,7 +38,7 @@ const VIRTIO_FS: &str = "virtio-fs";
 const INLINE_VIRTIO_FS: &str = "inline-virtio-fs";
 
 impl DragonballInner {
-    pub(crate) async fn add_device(&mut self, device: DeviceType) -> Result<DeviceType> {
+    pub(crate) async fn add_device(&mut self, device: DeviceType) -> Result<()> {
         if self.state == VmmState::NotReady {
             info!(sl!(), "VMM not ready, queueing device {}", device);
 
@@ -46,7 +46,7 @@ impl DragonballInner {
             // start_vm would pop the devices in an right order
             // to add the devices.
             self.pending_devices.insert(0, device.clone());
-            return Ok(device);
+            return Ok(());
         }
 
         info!(sl!(), "dragonball add device {:?}", &device);
@@ -54,13 +54,10 @@ impl DragonballInner {
             DeviceType::Network(network) => {
                 self.add_net_device(&network.config)
                     .context("add net device")?;
-                Ok(DeviceType::Network(network))
             }
             DeviceType::Vfio(mut hostdev) => {
                 self.add_vfio_device(&mut hostdev)
                     .context("add vfio device")?;
-
-                Ok(DeviceType::Vfio(hostdev))
             }
             DeviceType::Block(mut block) => {
                 let use_pci_bus = if block.config.driver_option == KATA_BLK_DEV_TYPE {
@@ -85,8 +82,6 @@ impl DragonballInner {
                         block.config.pci_path = Some(PciPath::try_from(slot as u32)?);
                     }
                 }
-
-                Ok(DeviceType::Block(block))
             }
             DeviceType::VhostUserBlk(block) => {
                 self.add_block_device(
@@ -98,24 +93,21 @@ impl DragonballInner {
                     None,
                 )
                 .context("add vhost user based block device")?;
-                Ok(DeviceType::VhostUserBlk(block))
             }
             DeviceType::HybridVsock(hvsock) => {
                 self.add_hvsock(&hvsock.config).context("add vsock")?;
-                Ok(DeviceType::HybridVsock(hvsock))
             }
             DeviceType::ShareFs(sharefs) => {
                 self.add_share_fs_device(&sharefs.config)
                     .context("add share fs device")?;
-                Ok(DeviceType::ShareFs(sharefs))
             }
             DeviceType::VhostUserNetwork(dev) => {
                 self.add_vhost_user_net_device(&dev.config)
                     .context("add vhost-user-net device")?;
-                Ok(DeviceType::VhostUserNetwork(dev))
             }
-            DeviceType::Vsock(_) | DeviceType::Protection(_) | DeviceType::PortDevice(_) => todo!(),
+            _ => todo!(),
         }
+        Ok(())
     }
 
     pub(crate) async fn remove_device(&mut self, device: DeviceType) -> Result<()> {

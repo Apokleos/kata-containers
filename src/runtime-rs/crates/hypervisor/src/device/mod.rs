@@ -5,16 +5,19 @@
 //
 
 use std::fmt;
+use std::sync::Arc;
 
 use crate::device::driver::vhost_user_blk::VhostUserBlkDevice;
+use crate::vfio_device::{VfioDeviceBase, VfioDeviceModern};
 use crate::{
-    BlockConfig, BlockDevice, HybridVsockConfig, HybridVsockDevice, Hypervisor as hypervisor,
-    NetworkConfig, NetworkDevice, PCIePortDevice, PortDeviceConfig, ProtectionDevice,
-    ProtectionDeviceConfig, ShareFsConfig, ShareFsDevice, VfioConfig, VfioDevice, VhostUserConfig,
-    VhostUserNetDevice, VsockConfig, VsockDevice,
+    BlockConfig, BlockConfigModern, BlockDevice, BlockDeviceModern, HybridVsockConfig,
+    HybridVsockDevice, Hypervisor as hypervisor, NetworkConfig, NetworkDevice, PCIePortDevice,
+    PortDeviceConfig, ProtectionDevice, ProtectionDeviceConfig, ShareFsConfig, ShareFsDevice,
+    VfioConfig, VfioDevice, VhostUserConfig, VhostUserNetDevice, VsockConfig, VsockDevice,
 };
 use anyhow::Result;
 use async_trait::async_trait;
+use tokio::sync::Mutex;
 
 use self::topology::PCIeTopology;
 
@@ -29,11 +32,13 @@ pub mod util;
 #[derive(Debug)]
 pub enum DeviceConfig {
     BlockCfg(BlockConfig),
+    BlockCfgModern(BlockConfigModern),
     VhostUserBlkCfg(VhostUserConfig),
     NetworkCfg(NetworkConfig),
     VhostUserNetworkCfg(VhostUserConfig),
     ShareFsCfg(ShareFsConfig),
     VfioCfg(VfioConfig),
+    VfioModernCfg(VfioDeviceBase),
     VsockCfg(VsockConfig),
     HybridVsockCfg(HybridVsockConfig),
     ProtectionDevCfg(ProtectionDeviceConfig),
@@ -43,8 +48,10 @@ pub enum DeviceConfig {
 #[derive(Debug, Clone)]
 pub enum DeviceType {
     Block(BlockDevice),
+    BlockModern(Arc<Mutex<BlockDeviceModern>>),
     VhostUserBlk(VhostUserBlkDevice),
     Vfio(VfioDevice),
+    VfioModern(Arc<Mutex<VfioDeviceModern>>),
     Network(NetworkDevice),
     VhostUserNetwork(VhostUserNetDevice),
     ShareFs(ShareFsDevice),

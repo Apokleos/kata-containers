@@ -227,7 +227,7 @@ impl std::fmt::Display for PCIePortBusPrefix {
 /// PCIePort distinguishes between different types of PCIe ports.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum PCIePort {
-    // NoPort is for disabling VFIO hotplug/coldplug
+    // No root-port/switch, VFIO does not occupy ports
     #[default]
     NoPort,
 
@@ -327,15 +327,19 @@ pub enum AvailableNode {
 
 #[derive(Clone, Debug, Default)]
 pub struct PCIeTopology {
+    pub mode: PCIePort, //  only one mode exists
     pub hypervisor_name: String,
     pub root_complex: PCIeRootComplex,
 
     pub bridges: u32,
+    pub cold_plug: bool,
     pub pcie_root_ports: u32,
     pub pcie_switch_ports: u32,
     pub hotplug_vfio_on_root_bus: bool,
     // pcie_port_devices keeps track of the devices attached to different types of PCI ports.
     pub pcie_port_devices: HashMap<u32, TopologyPortDevice>,
+    // device_id -> (bus, bus_slot, port_id)
+    pub reserved_bus: HashMap<String, (String, u32, u32)>,
 }
 
 impl PCIeTopology {
@@ -354,15 +358,172 @@ impl PCIeTopology {
         let total_rp = topo_config.device_info.pcie_root_port;
         let total_swp = topo_config.device_info.pcie_switch_port;
 
-        Some(Self {
+        let mode = match (total_rp, total_swp) {
+            (0, 0) => PCIePort::NoPort,
+            (r, 0) if r > 0 => PCIePort::RootPort,
+            (r, s) if r > 0 && s > 0 => PCIePort::SwitchPort,
+            (0, s) if s > 0 => {
+                // Cannot attach switch without rootport
+                // Here you can choose to return None or error directly; since new() returns Option, None is safer
+                return None;
+            }
+            _ => return None,
+        };
+
+        let mut topo = Self {
             hypervisor_name: topo_config.hypervisor_name.to_owned(),
             root_complex,
             bridges: topo_config.device_info.default_bridges,
+            cold_plug: true,
             pcie_root_ports: total_rp,
             pcie_switch_ports: total_swp,
             hotplug_vfio_on_root_bus: topo_config.device_info.hotplug_vfio_on_root_bus,
             pcie_port_devices: HashMap::new(),
-        })
+            mode,
+            reserved_bus: HashMap::new(),
+        };
+
+        // Initialize port structures (only in RootPort/SwitchPort mode)
+        if mode != PCIePort::NoPort {
+            // First create rootports
+            let _ = topo.add_root_ports_on_bus(total_rp);
+            // Then create switch based on mode
+            if mode == PCIePort::SwitchPort {
+                // Your existing strategy method can be reused:
+                let _ = topo.add_switch_ports_with_strategy(1, total_swp, Strategy::SingleRootPort);
+            }
+        }
+
+        Some(topo)
+    }
+
+    pub fn reserve_bus_for_device(
+        &mut self,
+        device_id: &str,
+        mode: PCIePort,
+    ) -> Result<Option<(String, u32, u32)>> {
+        if let Some(bus) = self.reserved_bus.get(device_id) {
+            return Ok(Some(bus.clone()));
+        }
+
+        let bus_port_id = match mode {
+            PCIePort::NoPort => return Ok(None),
+            PCIePort::RootPort => {
+                let rp = self
+                    .find_free_root_port()
+                    .ok_or_else(|| anyhow!("no free root port"))?;
+                // "rpX" starts from slot-6 and 0~5 are reserved for other virtio pci devices
+                (rp.port_id(), rp.id + 9, rp.id + 2)
+            }
+            PCIePort::SwitchPort => {
+                let dp = self
+                    .find_free_switch_down_port()
+                    .ok_or_else(|| anyhow!("no free switch downstream port"))?;
+                (dp.port_id(), dp.id + 9, dp.id + 2)
+            }
+        };
+
+        self.reserved_bus
+            .insert(device_id.to_string(), bus_port_id.clone());
+
+        Ok(Some(bus_port_id))
+    }
+
+    pub fn release_bus_for_device(&mut self, device_id: &str) -> Result<()> {
+        let bus = match self.reserved_bus.remove(device_id) {
+            Some(b) => b,
+            None => return Ok(()),
+        };
+
+        match self.mode {
+            PCIePort::NoPort => Ok(()),
+            PCIePort::RootPort => {
+                self.release_root_port(&bus.0);
+                Ok(())
+            }
+            PCIePort::SwitchPort => {
+                self.release_switch_down_port(&bus.0);
+                Ok(())
+            }
+        }
+    }
+
+    fn find_free_root_port(&mut self) -> Option<TopologyPortDevice> {
+        // 1. First, try to find an existing unallocated port.
+        // We sort the IDs to ensure we use them in sequential order (0, 1, 2...).
+        let mut ids: Vec<u32> = self.pcie_port_devices.keys().cloned().collect();
+        ids.sort();
+
+        for id in ids {
+            if let Some(rp) = self.pcie_port_devices.get_mut(&id) {
+                if !rp.allocated {
+                    rp.allocated = true;
+                    return Some(rp.clone());
+                }
+            }
+        }
+
+        // 2. If no free port is found and cold_plug is enabled, add a new root port.
+        if self.cold_plug {
+            // Determine the next ID: if empty, start from 0; otherwise, max_id + 1.
+            let next_id = self
+                .pcie_port_devices
+                .keys()
+                .max()
+                .map(|&id| id + 1)
+                .unwrap_or(0);
+
+            let new_port = TopologyPortDevice {
+                id: next_id,
+                bus: "pcie.0".to_string(), // Root ports are attached to pcie.0
+                allocated: true,           // Mark as allocated immediately
+                connected_switch: None,
+            };
+
+            // Store the newly created port into the map
+            self.pcie_port_devices.insert(next_id, new_port.clone());
+
+            return Some(new_port);
+        }
+
+        // No ports available and cannot create new ones
+        None
+    }
+
+    fn find_free_switch_down_port(&mut self) -> Option<SwitchDownPort> {
+        for rp in self.pcie_port_devices.values_mut() {
+            if let Some(sw) = rp.connected_switch.as_mut() {
+                for dp in sw.switch_ports.values_mut() {
+                    if !dp.allocated {
+                        dp.allocated = true;
+                        return Some(dp.clone());
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn release_root_port(&mut self, bus: &str) {
+        if let Some(id) = bus.strip_prefix("rp").and_then(|s| s.parse::<u32>().ok()) {
+            if let Some(rp) = self.pcie_port_devices.get_mut(&id) {
+                rp.allocated = false;
+            }
+        }
+    }
+
+    fn release_switch_down_port(&mut self, bus: &str) {
+        if let Some(id) = bus.strip_prefix("swdp").and_then(|s| s.parse::<u32>().ok()) {
+            for rp in self.pcie_port_devices.values_mut() {
+                if let Some(sw) = rp.connected_switch.as_mut() {
+                    if let Some(dp) = sw.switch_ports.get_mut(&id) {
+                        dp.allocated = false;
+                        dp.connected_device = None;
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     pub fn insert_device(&mut self, ep: &mut PCIeEndpoint) -> Option<PciPath> {

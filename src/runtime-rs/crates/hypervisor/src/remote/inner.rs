@@ -246,9 +246,9 @@ impl RemoteInner {
         todo!()
     }
 
-    pub(crate) async fn add_device(&self, device: DeviceType) -> Result<DeviceType> {
+    pub(crate) async fn add_device(&self, _device: DeviceType) -> Result<()> {
         warn!(sl!(), "RemoteInner::add_device(): NOT YET IMPLEMENTED");
-        Ok(device)
+        Ok(())
     }
 
     pub(crate) async fn remove_device(&self, _device: DeviceType) -> Result<()> {
