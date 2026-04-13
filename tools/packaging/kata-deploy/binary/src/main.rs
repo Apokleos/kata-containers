@@ -185,9 +185,25 @@ async fn install(config: &config::Config, runtime: &str) -> Result<()> {
                 log::warn!("EXPERIMENTAL_SETUP_SNAPSHOTTER is being ignored!");
                 log::warn!("Snapshotter is a containerd specific option.");
             } else {
+                // Check if any runtime-rs shim is being deployed
+                let has_runtime_rs_shim = config
+                    .shims_for_arch
+                    .iter()
+                    .any(|s| utils::is_rust_shim(s));
+
                 for s in &non_empty_snapshotters {
                     match s.as_str() {
                         "erofs" => {
+                            // erofs snapshotter requires runtime-rs for block-level
+                            // image pass-through to the guest VM
+                            if !has_runtime_rs_shim {
+                                log::warn!(
+                                    "erofs snapshotter is configured but no runtime-rs shim \
+                                     is deployed. erofs requires runtime-rs for block-level \
+                                     image pass-through. Skipping erofs configuration."
+                                );
+                                continue;
+                            }
                             runtime::containerd::containerd_erofs_snapshotter_version_check(config)
                                 .await?;
                         }
@@ -211,7 +227,20 @@ async fn install(config: &config::Config, runtime: &str) -> Result<()> {
 
     if runtime != "crio" {
         if let Some(snapshotters) = config.experimental_setup_snapshotter.as_ref() {
+            // Check if any runtime-rs shim is being deployed (for erofs requirement)
+            let has_runtime_rs_shim = config
+                .shims_for_arch
+                .iter()
+                .any(|s| utils::is_rust_shim(s));
+
             for snapshotter in snapshotters {
+                // Skip erofs if no runtime-rs shim is deployed
+                if snapshotter == "erofs" && !has_runtime_rs_shim {
+                    log::warn!(
+                        "Skipping erofs snapshotter installation: no runtime-rs shim deployed"
+                    );
+                    continue;
+                }
                 artifacts::snapshotters::install_snapshotter(snapshotter, config).await?;
                 artifacts::snapshotters::configure_snapshotter(snapshotter, runtime, config)
                     .await?;
