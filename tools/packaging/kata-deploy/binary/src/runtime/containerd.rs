@@ -596,6 +596,57 @@ pub fn snapshotter_handler_mapping_validation_check(config: &Config) -> Result<(
     Ok(())
 }
 
+/// Parse erofs-utils version string from `mkfs.erofs --version` output.
+/// Output format examples: "mkfs.erofs 1.8.2" or "mkfs.erofs 1.7.0"
+/// Returns (major, minor, patch) tuple.
+fn parse_erofs_utils_version(output: &str) -> Result<(u32, u32, u32)> {
+    // Find the version string (first token that starts with a digit)
+    let version_str = output
+        .split_whitespace()
+        .find(|s| s.chars().next().map_or(false, |c| c.is_ascii_digit()))
+        .ok_or_else(|| anyhow::anyhow!("Cannot find version in erofs-utils output: {}", output))?;
+
+    // Parse version components (handle formats like "1.8.2" or "1.7")
+    let parts: Vec<&str> = version_str.split('.').collect();
+    if parts.len() < 2 {
+        anyhow::bail!("Invalid erofs-utils version format: {}", version_str);
+    }
+
+    let major: u32 = parts[0].parse().context("Failed to parse major version")?;
+    let minor: u32 = parts[1]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect::<String>()
+        .parse()
+        .context("Failed to parse minor version")?;
+    let patch: u32 = parts
+        .get(2)
+        .map(|s| {
+            s.chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect::<String>()
+        })
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+
+    Ok((major, minor, patch))
+}
+
+/// Check if erofs-utils version is >= required version.
+fn erofs_utils_version_ge(
+    current: (u32, u32, u32),
+    required: (u32, u32, u32),
+) -> bool {
+    current >= required
+}
+
+/// Detect erofs-utils version on the host by running `mkfs.erofs --version`.
+/// Uses nsenter to execute in host mount namespace.
+pub fn detect_host_erofs_utils_version() -> Result<(u32, u32, u32)> {
+    let output = crate::utils::host_exec(&["mkfs.erofs", "--version"])?;
+    parse_erofs_utils_version(&output)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -808,6 +859,60 @@ mod tests {
             "Expected error for {} to contain '{}'",
             version,
             expected_error
+        );
+    }
+
+    // --- erofs-utils version parsing tests ---
+
+    #[rstest]
+    #[case("mkfs.erofs 1.8.2\n", (1, 8, 2))]
+    #[case("mkfs.erofs 1.7.0\n", (1, 7, 0))]
+    #[case("mkfs.erofs 1.8.0\n", (1, 8, 0))]
+    #[case("mkfs.erofs 2.0.0\n", (2, 0, 0))]
+    #[case("mkfs.erofs 1.7\n", (1, 7, 0))] // No patch version
+    #[case("mkfs.erofs 1.8.2-foobar\n", (1, 8, 2))] // With suffix
+    fn test_parse_erofs_utils_version(
+        #[case] output: &str,
+        #[case] expected: (u32, u32, u32),
+    ) {
+        let result = parse_erofs_utils_version(output).unwrap();
+        assert_eq!(result, expected, "Failed to parse: {}", output);
+    }
+
+    #[rstest]
+    #[case("invalid output")]
+    #[case("mkfs.erofs")]
+    #[case("mkfs.erofs abc.def.ghi")]
+    #[case("")]
+    fn test_parse_erofs_utils_version_invalid(#[case] output: &str) {
+        let result = parse_erofs_utils_version(output);
+        assert!(
+            result.is_err(),
+            "Expected error for invalid input: {:?}",
+            output
+        );
+    }
+
+    #[rstest]
+    #[case((1, 8, 2), (1, 8, 2), true)]  // equal
+    #[case((1, 8, 3), (1, 8, 2), true)]  // patch higher
+    #[case((1, 9, 0), (1, 8, 2), true)]  // minor higher
+    #[case((2, 0, 0), (1, 8, 2), true)]  // major higher
+    #[case((1, 8, 1), (1, 8, 2), false)] // patch lower
+    #[case((1, 7, 9), (1, 8, 2), false)] // minor lower
+    #[case((0, 9, 9), (1, 8, 2), false)] // major lower
+    fn test_erofs_utils_version_ge(
+        #[case] current: (u32, u32, u32),
+        #[case] required: (u32, u32, u32),
+        #[case] expected: bool,
+    ) {
+        assert_eq!(
+            erofs_utils_version_ge(current, required),
+            expected,
+            "erofs_utils_version_ge({:?}, {:?}) should be {}",
+            current,
+            required,
+            expected
         );
     }
 }
