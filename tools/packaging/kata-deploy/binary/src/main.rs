@@ -186,10 +186,8 @@ async fn install(config: &config::Config, runtime: &str) -> Result<()> {
                 log::warn!("Snapshotter is a containerd specific option.");
             } else {
                 // Check if any runtime-rs shim is being deployed
-                let has_runtime_rs_shim = config
-                    .shims_for_arch
-                    .iter()
-                    .any(|s| utils::is_rust_shim(s));
+                let has_runtime_rs_shim =
+                    config.shims_for_arch.iter().any(|s| utils::is_rust_shim(s));
 
                 for s in &non_empty_snapshotters {
                     match s.as_str() {
@@ -228,10 +226,7 @@ async fn install(config: &config::Config, runtime: &str) -> Result<()> {
     if runtime != "crio" {
         if let Some(snapshotters) = config.experimental_setup_snapshotter.as_ref() {
             // Check if any runtime-rs shim is being deployed (for erofs requirement)
-            let has_runtime_rs_shim = config
-                .shims_for_arch
-                .iter()
-                .any(|s| utils::is_rust_shim(s));
+            let has_runtime_rs_shim = config.shims_for_arch.iter().any(|s| utils::is_rust_shim(s));
 
             for snapshotter in snapshotters {
                 // Skip erofs if no runtime-rs shim is deployed

@@ -633,10 +633,7 @@ fn parse_erofs_utils_version(output: &str) -> Result<(u32, u32, u32)> {
 }
 
 /// Check if erofs-utils version is >= required version.
-fn erofs_utils_version_ge(
-    current: (u32, u32, u32),
-    required: (u32, u32, u32),
-) -> bool {
+pub fn erofs_utils_version_ge(current: (u32, u32, u32), required: (u32, u32, u32)) -> bool {
     current >= required
 }
 
@@ -871,10 +868,7 @@ mod tests {
     #[case("mkfs.erofs 2.0.0\n", (2, 0, 0))]
     #[case("mkfs.erofs 1.7\n", (1, 7, 0))] // No patch version
     #[case("mkfs.erofs 1.8.2-foobar\n", (1, 8, 2))] // With suffix
-    fn test_parse_erofs_utils_version(
-        #[case] output: &str,
-        #[case] expected: (u32, u32, u32),
-    ) {
+    fn test_parse_erofs_utils_version(#[case] output: &str, #[case] expected: (u32, u32, u32)) {
         let result = parse_erofs_utils_version(output).unwrap();
         assert_eq!(result, expected, "Failed to parse: {}", output);
     }
@@ -894,10 +888,10 @@ mod tests {
     }
 
     #[rstest]
-    #[case((1, 8, 2), (1, 8, 2), true)]  // equal
-    #[case((1, 8, 3), (1, 8, 2), true)]  // patch higher
-    #[case((1, 9, 0), (1, 8, 2), true)]  // minor higher
-    #[case((2, 0, 0), (1, 8, 2), true)]  // major higher
+    #[case((1, 8, 2), (1, 8, 2), true)] // equal
+    #[case((1, 8, 3), (1, 8, 2), true)] // patch higher
+    #[case((1, 9, 0), (1, 8, 2), true)] // minor higher
+    #[case((2, 0, 0), (1, 8, 2), true)] // major higher
     #[case((1, 8, 1), (1, 8, 2), false)] // patch lower
     #[case((1, 7, 9), (1, 8, 2), false)] // minor lower
     #[case((0, 9, 9), (1, 8, 2), false)] // major lower
