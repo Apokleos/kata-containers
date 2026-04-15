@@ -12,10 +12,11 @@ use log::info;
 use std::fs;
 use std::path::Path;
 
-pub async fn configure_erofs_snapshotter(
-    _config: &Config,
-    configuration_file: &Path,
-) -> Result<()> {
+/// Minimum erofs-utils version required for mkfs_options support.
+/// erofs-utils >= 1.8.2 supports the -T0, --mkfs-time, and --sort=none options.
+const EROFS_UTILS_MIN_VERSION_FOR_MKFS_OPTIONS: (u32, u32, u32) = (1, 8, 2);
+
+pub async fn configure_erofs_snapshotter(config: &Config, configuration_file: &Path) -> Result<()> {
     info!("Configuring erofs-snapshotter");
 
     toml_utils::set_toml_value(
@@ -40,6 +41,69 @@ pub async fn configure_erofs_snapshotter(
         ".plugins.\"io.containerd.snapshotter.v1.erofs\".set_immutable",
         "true",
     )?;
+
+    // Configure erofs differ plugin mkfs_options conditionally.
+    // See: https://github.com/containerd/containerd/blob/main/docs/snapshotters/erofs.md
+    // If the version of erofs-utils >= 1.8.2:
+    //   -T0: use fixed timestamp for reproducibility
+    //   --mkfs-time: include mkfs time in metadata
+    //   --sort=none: disable sorting for faster image creation
+    match containerd::detect_host_erofs_utils_version() {
+        Ok(version) => {
+            if containerd::erofs_utils_version_ge(version, EROFS_UTILS_MIN_VERSION_FOR_MKFS_OPTIONS)
+            {
+                info!(
+                    "erofs-utils version {}.{}.{} >= {}.{}.{}, enabling mkfs_options",
+                    version.0,
+                    version.1,
+                    version.2,
+                    EROFS_UTILS_MIN_VERSION_FOR_MKFS_OPTIONS.0,
+                    EROFS_UTILS_MIN_VERSION_FOR_MKFS_OPTIONS.1,
+                    EROFS_UTILS_MIN_VERSION_FOR_MKFS_OPTIONS.2
+                );
+                toml_utils::set_toml_value(
+                    configuration_file,
+                    ".plugins.\"io.containerd.differ.v1.erofs\".mkfs_options",
+                    "[\"-T0\",\"--mkfs-time\",\"--sort=none\"]",
+                )?;
+            } else {
+                info!(
+                    "erofs-utils version {}.{}.{} < {}.{}.{}, skipping mkfs_options",
+                    version.0,
+                    version.1,
+                    version.2,
+                    EROFS_UTILS_MIN_VERSION_FOR_MKFS_OPTIONS.0,
+                    EROFS_UTILS_MIN_VERSION_FOR_MKFS_OPTIONS.1,
+                    EROFS_UTILS_MIN_VERSION_FOR_MKFS_OPTIONS.2
+                );
+                // Default empty
+            }
+        }
+        Err(e) => {
+            log::warn!(
+                "Could not detect erofs-utils version: {}. Skipping mkfs_options configuration. \
+                 Install erofs-utils >= {}.{}.{} to enable this feature.",
+                e,
+                EROFS_UTILS_MIN_VERSION_FOR_MKFS_OPTIONS.0,
+                EROFS_UTILS_MIN_VERSION_FOR_MKFS_OPTIONS.1,
+                EROFS_UTILS_MIN_VERSION_FOR_MKFS_OPTIONS.2
+            );
+        }
+    }
+
+    let is_rust_shim = config.shims_for_arch.iter().any(|s| utils::is_rust_shim(s));
+    if is_rust_shim {
+        toml_utils::set_toml_value(
+            configuration_file,
+            ".plugins.\"io.containerd.snapshotter.v1.erofs\".default_size",
+            "\"10G\"",
+        )?;
+        toml_utils::set_toml_value(
+            configuration_file,
+            ".plugins.\"io.containerd.snapshotter.v1.erofs\".max_unmerged_layers",
+            "1",
+        )?;
+    }
 
     Ok(())
 }
