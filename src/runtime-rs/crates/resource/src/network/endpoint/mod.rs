@@ -32,6 +32,10 @@ use std::sync::Arc;
 
 use super::EndpointState;
 
+/// Default virtio-net queue size (in entries) used by network endpoints and
+/// the DAN layer when no explicit value is configured.
+pub const DEFAULT_QUEUE_SIZE: usize = 256;
+
 pub(crate) async fn attach_network_device(
     d: &Arc<RwLock<DeviceManager>>,
     config: NetworkConfig,

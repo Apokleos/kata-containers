@@ -34,7 +34,7 @@ use tokio::sync::RwLock;
 use super::network_entity::NetworkEntity;
 use super::utils::address::{ip_family_from_ip_addr, parse_ip_cidr};
 use super::{EndpointState, Network};
-use crate::network::endpoint::{TapEndpoint, VhostUserEndpoint};
+use crate::network::endpoint::{TapEndpoint, VhostUserEndpoint, DEFAULT_QUEUE_SIZE};
 use crate::network::network_info::network_info_from_dan::NetworkInfoFromDan;
 use crate::network::utils::generate_private_mac_addr;
 use crate::network::Endpoint;
@@ -287,7 +287,11 @@ impl Device {
         } else {
             *queue_num
         };
-        let qsize = if *queue_size == 0 { 256 } else { *queue_size };
+        let qsize = if *queue_size == 0 {
+            DEFAULT_QUEUE_SIZE
+        } else {
+            *queue_size
+        };
         (qnum, qsize)
     }
 }
