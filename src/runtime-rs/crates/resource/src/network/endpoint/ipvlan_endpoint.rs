@@ -16,7 +16,7 @@ use hypervisor::{Hypervisor, NetworkDevice};
 use tokio::sync::RwLock;
 
 use super::endpoint_persist::{EndpointState, IpVlanEndpointState};
-use super::{attach_network_device, Endpoint};
+use super::{attach_network_device, Endpoint, DEFAULT_QUEUE_SIZE};
 use crate::network::{network_model::TC_FILTER_NET_MODEL_STR, utils, NetworkPair};
 
 // IPVlanEndpoint is the endpoint bridged to VM
@@ -59,7 +59,7 @@ impl IPVlanEndpoint {
             virt_iface_name: self.net_pair.virt_iface.name.clone(),
             guest_mac: Some(guest_mac),
             queue_num: self.net_pair.network_queues,
-            queue_size: 256,
+            queue_size: DEFAULT_QUEUE_SIZE,
             ..Default::default()
         })
     }

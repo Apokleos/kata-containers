@@ -32,6 +32,8 @@ use std::sync::Arc;
 
 use super::EndpointState;
 
+pub const DEFAULT_QUEUE_SIZE: usize = 256;
+
 pub(crate) async fn attach_network_device(
     d: &Arc<RwLock<DeviceManager>>,
     config: NetworkConfig,
