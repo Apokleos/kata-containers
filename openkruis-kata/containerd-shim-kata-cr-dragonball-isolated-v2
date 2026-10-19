@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -eu
+
+readonly config=/etc/kata-containers/runtime-rs/configuration-cr-dragonball-isolated.toml
+readonly shim=/usr/local/libexec/kata-cr-dragonball-isolated/containerd-shim-kata-v2
+
+test -r "${config}"
+test -x "${shim}"
+
+export RUST_LOG=debug
+export RUST_BACKTRACE=full
+
+exec "${shim}" "$@"
