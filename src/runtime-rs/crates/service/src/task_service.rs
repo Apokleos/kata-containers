@@ -10,11 +10,25 @@ use std::{
 };
 
 use async_trait::async_trait;
+use common::error::Error as CommonError;
 use common::types::{TaskRequest, TaskResponse};
 use containerd_shim_protos::{api, shim_async};
 use ttrpc::{self, r#async::TtrpcContext};
 
 use runtimes::RuntimeHandlerManager;
+
+fn map_runtime_error(err: anyhow::Error) -> ttrpc::Error {
+    if matches!(
+        err.downcast_ref::<CommonError>(),
+        Some(CommonError::SandboxOperationPrecondition(_))
+    ) {
+        return ttrpc::Error::RpcStatus(ttrpc::get_status(
+            ttrpc::Code::FAILED_PRECONDITION,
+            format!("failed to handle task message: {err:#}"),
+        ));
+    }
+    ttrpc::Error::Others(format!("failed to handle message {err:?}"))
+}
 
 pub(crate) struct TaskService {
     handler: Arc<RuntimeHandlerManager>,
@@ -45,7 +59,7 @@ impl TaskService {
             .handler
             .handler_task_message(r)
             .await
-            .map_err(|err| ttrpc::Error::Others(format!("failed to handle message {err:?}")))?;
+            .map_err(map_runtime_error)?;
         debug!(logger, "<==== task service {:?}", &resp);
         resp.try_into()
             .map_err(|err| ttrpc::Error::Others(format!("failed to translate to shim {err:?}")))

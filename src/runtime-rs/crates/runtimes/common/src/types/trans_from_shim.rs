@@ -4,9 +4,11 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
+use crate::types::{CheckpointSandboxRequest, PrepareRestoreOptions, RestoreSandboxRequest, SandboxCheckpointTask, SandboxRestoreTask};
+
 use super::{
-    ContainerConfig, ContainerID, ContainerProcess, ExecProcessRequest, KillRequest,
-    ResizePTYRequest, SandboxConfig, SandboxID, SandboxNetworkEnv, SandboxRequest,
+    ContainerConfig, ContainerID, ContainerProcess, CreateSandboxRequest as InternalCreateSandboxRequest,
+    ExecProcessRequest, KillRequest, ResizePTYRequest, SandboxConfig, SandboxID, SandboxNetworkEnv, SandboxRequest,
     SandboxStatusRequest, ShutdownRequest, StopSandboxRequest, TaskRequest, UpdateRequest,
     DEFAULT_SHM_SIZE,
 };
@@ -66,33 +68,49 @@ fn dns_config_to_resolv_conf(dns_config: cri_api_v1::DNSConfig) -> Vec<String> {
     dns
 }
 
-// There're a lot of information to create a sandbox from CreateSandboxRequest and the internal PodSandboxConfig.
-// At present, we only take out part of it to build SandboxConfig.
+// Build the sandbox from PodSandboxConfig when options are provided. Direct
+// Sandbox API callers may omit options and use the request fields instead.
 impl TryFrom<sandbox_api::CreateSandboxRequest> for SandboxRequest {
     type Error = anyhow::Error;
     fn try_from(from: sandbox_api::CreateSandboxRequest) -> Result<Self> {
-        let type_url = from.options.type_url.clone();
-        if type_url != SANDBOX_API_V1 {
-            return Err(anyhow!(format!("unsupported type url: {}", type_url)));
+        let (hostname, dns, annotations) = if from.has_options() {
+            let type_url = from.options.type_url.clone();
+            if type_url != SANDBOX_API_V1 {
+                return Err(anyhow!(format!("unsupported type url: {}", type_url)));
+            }
+
+            let config = cri_api_v1::PodSandboxConfig::parse_from_bytes(&from.options.value)?;
+            let dns = config
+                .dns_config
+                .into_option()
+                .map(dns_config_to_resolv_conf)
+                .unwrap_or_default();
+            (config.hostname, dns, config.annotations)
+        } else {
+            (
+                from.sandbox_id.clone(),
+                Vec::new(),
+                from.annotations.clone(),
+            )
         };
 
-        let config = cri_api_v1::PodSandboxConfig::parse_from_bytes(&from.options.value)?;
+        let prepare_restore = None;
+            from.prepare_restore
+                .into_option()
+                .map(|prepare| PrepareRestoreOptions {
+                    checkpoint_path: prepare.checkpoint_path,
+                    options: prepare.options,
+                });
 
-        let dns = config
-            .dns_config
-            .into_option()
-            .map(dns_config_to_resolv_conf)
-            .unwrap_or_default();
-
-        Ok(SandboxRequest::CreateSandbox(Box::new(SandboxConfig {
+        let sandbox_config = SandboxConfig {
             sandbox_id: from.sandbox_id.clone(),
-            hostname: config.hostname,
+            hostname,
             dns,
             network_env: SandboxNetworkEnv {
                 netns: Some(from.netns_path),
                 network_created: false,
             },
-            annotations: config.annotations.clone(),
+            annotations: annotations.clone(),
             hooks: None,
             state: runtime_spec::State {
                 version: Default::default(),
@@ -100,11 +118,18 @@ impl TryFrom<sandbox_api::CreateSandboxRequest> for SandboxRequest {
                 status: runtime_spec::ContainerState::Creating,
                 pid: 0,
                 bundle: from.bundle_path,
-                annotations: config.annotations,
+                annotations,
             },
             shm_size: DEFAULT_SHM_SIZE,
             config_path: None,
-        })))
+        };
+
+        Ok(SandboxRequest::CreateSandbox(Box::new(
+            InternalCreateSandboxRequest {
+                sandbox_config,
+                prepare_restore,
+            },
+        )))
     }
 }
 
@@ -170,6 +195,96 @@ impl TryFrom<sandbox_api::ShutdownSandboxRequest> for SandboxRequest {
         Ok(SandboxRequest::ShutdownSandbox(SandboxID {
             sandbox_id: from.sandbox_id,
         }))
+    }
+}
+
+impl TryFrom<sandbox_api::CheckpointRequest> for SandboxRequest {
+    type Error = anyhow::Error;
+
+    fn try_from(from: sandbox_api::CheckpointRequest) -> Result<Self> {
+        Ok(SandboxRequest::CheckpointSandbox(
+            CheckpointSandboxRequest {
+                sandbox_id: from.sandbox_id,
+                output_path: from.output_path,
+                tasks: from
+                    .containers
+                    .into_iter()
+                    .map(|c| SandboxCheckpointTask {
+                        checkpoint_key: c.name,
+                        task_id: c.id,
+                        rootfs_device_ids: Vec::new(),
+                    })
+                    .collect(),
+                options: from.options,
+                operation_timeout: None,
+            },
+        ))
+    }
+}
+
+impl TryFrom<sandbox_api::RestoreRequest> for SandboxRequest {
+    type Error = anyhow::Error;
+
+    fn try_from(from: sandbox_api::RestoreRequest) -> Result<Self> {
+        let type_url = from.sandbox_config.type_url.clone();
+        if !type_url.is_empty() && type_url != SANDBOX_API_V1 {
+            return Err(anyhow!("unsupported sandbox config type url: {type_url}"));
+        }
+        let uses_request_fields = type_url.is_empty();
+        let config = if uses_request_fields {
+            cri_api_v1::PodSandboxConfig::new()
+        } else {
+            cri_api_v1::PodSandboxConfig::parse_from_bytes(&from.sandbox_config.value)?
+        };
+        let dns = config
+            .dns_config
+            .into_option()
+            .map(dns_config_to_resolv_conf)
+            .unwrap_or_default();
+        let hostname = if config.hostname.is_empty() {
+            from.sandbox_id.clone()
+        } else {
+            config.hostname.clone()
+        };
+        let sandbox_id = from.sandbox_id;
+        let sandbox_config = SandboxConfig {
+            sandbox_id: sandbox_id.clone(),
+            hostname,
+            dns,
+            network_env: SandboxNetworkEnv {
+                netns: None,
+                network_created: false,
+            },
+            annotations: config.annotations.clone(),
+            hooks: None,
+            state: runtime_spec::State {
+                version: Default::default(),
+                id: sandbox_id,
+                status: runtime_spec::ContainerState::Creating,
+                pid: 0,
+                bundle: String::new(),
+                annotations: config.annotations,
+            },
+            shm_size: DEFAULT_SHM_SIZE,
+            config_path: None,
+        };
+        let tasks = from
+            .containers
+            .into_iter()
+            .map(|c| SandboxRestoreTask {
+                checkpoint_key: c.name,
+                task_id: c.id,
+            })
+            .collect();
+        Ok(SandboxRequest::RestoreSandbox(Box::new(
+            RestoreSandboxRequest {
+                sandbox_config,
+                checkpoint_path: from.checkpoint_path,
+                options: from.options,
+                tasks,
+                operation_timeout: None,
+            },
+        )))
     }
 }
 
@@ -352,7 +467,7 @@ mod tests {
             panic!("expected create sandbox request");
         };
 
-        config.dns
+        config.sandbox_config.dns
     }
 
     #[test]
@@ -376,5 +491,100 @@ mod tests {
     #[test]
     fn create_sandbox_without_dns_config_has_empty_dns() {
         assert!(convert_create_sandbox_dns(None).is_empty());
+    }
+
+    #[test]
+    fn create_sandbox_without_options_uses_sandbox_id_as_hostname() {
+        let mut request = sandbox_api::CreateSandboxRequest::new();
+        request.sandbox_id = "sandbox-id".into();
+        request.bundle_path = "/run/kata/sandbox-id".into();
+        request.netns_path = "/run/netns/sandbox-id".into();
+        request.annotations.insert(
+            "io.katacontainers.config.hypervisor.default_vcpus".into(),
+            "2".into(),
+        );
+
+        let request = SandboxRequest::try_from(request).unwrap();
+        let SandboxRequest::CreateSandbox(config) = request else {
+            panic!("expected create sandbox request");
+        };
+
+        let config = config.sandbox_config;
+        assert_eq!(config.sandbox_id, "sandbox-id");
+        assert_eq!(config.hostname, "sandbox-id");
+        assert!(config.dns.is_empty());
+        assert_eq!(
+            config.network_env.netns.as_deref(),
+            Some("/run/netns/sandbox-id")
+        );
+        assert_eq!(config.state.bundle, "/run/kata/sandbox-id");
+        assert_eq!(
+            config
+                .annotations
+                .get("io.katacontainers.config.hypervisor.default_vcpus")
+                .map(String::as_str),
+            Some("2")
+        );
+        assert_eq!(config.annotations, config.state.annotations);
+    }
+
+    #[test]
+    fn create_sandbox_rejects_unknown_options_type() {
+        let mut options = protobuf::well_known_types::any::Any::new();
+        options.type_url = "example.test.UnknownSandboxConfig".into();
+
+        let mut request = sandbox_api::CreateSandboxRequest::new();
+        request.options = protobuf::MessageField::some(options);
+
+        let error = SandboxRequest::try_from(request).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("unsupported type url: example.test.UnknownSandboxConfig"));
+    }
+
+    #[test]
+    fn create_sandbox_with_cri_options_preserves_cri_config_precedence() {
+        let mut config = cri_api_v1::PodSandboxConfig::new();
+        config.hostname = "cri-hostname".into();
+        config
+            .annotations
+            .insert("annotation-source".into(), "cri".into());
+        config
+            .annotations
+            .insert("example.test.annotation".into(), "value".into());
+
+        let mut options = protobuf::well_known_types::any::Any::new();
+        options.type_url = SANDBOX_API_V1.into();
+        options.value = config.write_to_bytes().unwrap();
+
+        let mut request = sandbox_api::CreateSandboxRequest::new();
+        request.sandbox_id = "sandbox-id".into();
+        request
+            .annotations
+            .insert("annotation-source".into(), "request".into());
+        request.options = protobuf::MessageField::some(options);
+
+        let request = SandboxRequest::try_from(request).unwrap();
+        let SandboxRequest::CreateSandbox(config) = request else {
+            panic!("expected create sandbox request");
+        };
+
+        assert_eq!(config.sandbox_config.hostname, "cri-hostname");
+        assert_eq!(
+            config
+                .sandbox_config
+                .annotations
+                .get("example.test.annotation")
+                .map(String::as_str),
+            Some("value")
+        );
+        assert_eq!(
+            config
+                .sandbox_config
+                .annotations
+                .get("annotation-source")
+                .map(String::as_str),
+            Some("cri")
+        );
     }
 }

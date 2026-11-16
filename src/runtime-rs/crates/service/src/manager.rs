@@ -15,6 +15,7 @@ use runtimes::{CleanupOutcome, RuntimeHandlerManager};
 use tokio::sync::mpsc::{channel, Receiver};
 use ttrpc::asynchronous::Server;
 
+// use crate::checkpoint_service::CheckpointService;
 use crate::event::{new_event_publisher, Forwarder};
 use crate::sandbox_service::SandboxService;
 use crate::task_service::TaskService;
@@ -178,9 +179,20 @@ impl ServiceManager {
                 Arc::new(SandboxService::new(self.handler.clone()));
             let s = s.register_service(sandbox_async::create_sandbox(sandbox_service));
 
+            let checkpoint_service: Arc<dyn sandbox_async::Checkpoint + Send + Sync> =
+                Arc::new(CheckpointService::new(self.handler.clone()));
+            let s = s.register_service(sandbox_async::create_checkpoint(checkpoint_service));
+
             let task_service: Arc<dyn shim_async::Task + Send + Sync> =
                 Arc::new(TaskService::new(self.handler.clone()));
-            let s = s.register_service(shim_async::create_task(task_service));
+            let mut task_services = shim_async::create_task(task_service);
+            if !task_services.contains_key("containerd.task.v3.Task") {
+                let task_service = task_services
+                    .remove("containerd.task.v2.Task")
+                    .context("generated Task service is missing")?;
+                task_services.insert("containerd.task.v3.Task".to_string(), task_service);
+            }
+            let s = s.register_service(task_services);
             self.server = Some(s);
         }
         Ok(())
