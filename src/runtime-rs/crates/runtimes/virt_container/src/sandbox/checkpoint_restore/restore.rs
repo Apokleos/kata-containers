@@ -86,6 +86,7 @@ impl VirtSandbox {
         debug!(sl!(), "create restore rootfs overlay");
         let restore_dir =
             artifacts::restore_artifact_dir(checkpoint_root, &sandbox_config.sandbox_id)?;
+        let is_dragonball = manifest.hypervisor == hypervisor::HYPERVISOR_DRAGONBALL;
 
         self.create_private_restore_dir(&restore_dir).await?;
 
@@ -100,7 +101,7 @@ impl VirtSandbox {
                     &prepare.options,
                     &manifest.rootfs,
                     &restore_dir,
-                    true
+                    !is_dragonball
                 ),
                 vm::restore_vm_artifacts(
                     &manifest.hypervisor,
