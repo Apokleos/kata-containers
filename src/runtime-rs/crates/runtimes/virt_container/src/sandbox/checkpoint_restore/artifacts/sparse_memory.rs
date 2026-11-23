@@ -4,14 +4,12 @@
 
 //! Sparse-memory snapshot artifacts using the Dragonball memory codecs.
 
-use super::super::file_integrity;
 use super::vm::{EncodedArtifact, VmArtifacts, VmCheckpointArtifact, VM_ARTIFACT_RAW_FORMAT};
 use super::{run_artifact_worker, ArtifactError};
 use anyhow::{anyhow, Context, Result};
 use dragonball::snapshot::memory::{
     copy_flat_sparse_file, encode_memory_overlay, memory_overlay_size, merge_flat_sparse_file,
-    verify_flat_sparse_file, CodecError, SparseArtifact, SparseEncodeStats, FLAT_SPARSE_FORMAT,
-    OVERLAY_FORMAT,
+    CodecError, SparseArtifact, SparseEncodeStats, FLAT_SPARSE_FORMAT, OVERLAY_FORMAT,
 };
 use hypervisor::{VmMemoryRange, VmResourceTopology, VmSaveResult};
 use std::{
@@ -24,7 +22,7 @@ use std::{
     io::Write,
     os::{
         fd::AsRawFd,
-        unix::fs::{MetadataExt, OpenOptionsExt},
+        unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     },
 };
 
@@ -38,10 +36,9 @@ fn map_memory_error(error: anyhow::Error) -> anyhow::Error {
     }
 }
 
-pub(super) struct SparseMeta<'a> {
+pub(super) struct SparseMeta {
     pub(super) encoded_size: u64,
     pub(super) logical_size: u64,
-    pub(super) sha256: &'a str,
 }
 
 pub(super) fn validate_artifacts(
@@ -133,7 +130,7 @@ pub(super) fn finalize_checkpoint_memory(
         .collect())
 }
 
-/// Prepare native memory after the caller has verified/copied raw state files.
+/// Prepare native memory after the caller has copied raw state files.
 pub(super) async fn prepare_restore_memory(
     source_dir: PathBuf,
     destination_dir: PathBuf,
@@ -204,7 +201,6 @@ pub(super) async fn prepare_restore_memory(
                 SparseMeta {
                     logical_size: artifact.logical_size,
                     encoded_size: artifact.encoded_size,
-                    sha256: &artifact.sha256,
                 },
             )
         })
@@ -221,9 +217,7 @@ pub(super) fn restore_memory(
     logical_size: u64,
     sha256: &str,
 ) -> Result<()> {
-    let started = Instant::now();
-    let verified =
-        verify_flat_sparse_file(source, logical_size, sha256).map_err(map_memory_error)?;
+    inspect_memory_source(source, logical_size)?;
 
     link_memory_artifact(source, destination, "memory")?;
     let mut digest = fs::OpenOptions::new()
@@ -231,19 +225,11 @@ pub(super) fn restore_memory(
         .create_new(true)
         .mode(0o400)
         .custom_flags(libc::O_NOFOLLOW)
-        .open(destination.with_file_name(VERIFIED_MEMORY_DIGEST))
-        .context("create verified Dragonball memory digest")?;
+        .open(destination.with_file_name(MEMORY_DIGEST))
+        .context("create Dragonball memory digest")?;
 
     digest.write_all(sha256.as_bytes())?;
     digest.sync_all()?;
-
-    debug!(sl!(), "verified flat sparse VM memory artifact";
-        "logical_bytes" => logical_size,
-        "candidate_bytes" => verified.stats.candidate_bytes,
-        "candidate_chunks" => verified.stats.candidate_chunks,
-        "non_zero_chunks" => verified.non_zero_chunks,
-        "elapsed_us" => started.elapsed().as_micros(),
-    );
 
     Ok(())
 }
@@ -251,15 +237,9 @@ pub(super) fn restore_memory(
 pub(super) fn restore_overlay(
     source: &Path,
     destination: &Path,
-    expected: SparseMeta<'_>,
+    expected: SparseMeta,
 ) -> Result<()> {
-    let (size, sha256) = file_integrity(source)?;
-    if size != expected.encoded_size || sha256 != expected.sha256 {
-        return Err(ArtifactError::Invalid(
-            "Dragonball memory overlay failed integrity validation".to_string(),
-        )
-        .into());
-    }
+    inspect_memory_source(source, expected.encoded_size)?;
 
     if expected.logical_size == 0 {
         return Err(ArtifactError::Invalid(
@@ -271,9 +251,29 @@ pub(super) fn restore_overlay(
     link_memory_artifact(source, destination, "overlay")
 }
 
+fn inspect_memory_source(source: &Path, expected_size: u64) -> Result<()> {
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(source)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file()
+        || metadata.len() != expected_size
+        || metadata.permissions().mode() & 0o222 != 0
+    {
+        return Err(ArtifactError::Invalid(format!(
+            "Dragonball memory artifact {} is invalid",
+            source.display()
+        ))
+        .into());
+    }
+
+    Ok(())
+}
+
 fn link_memory_artifact(source: &Path, destination: &Path, kind: &str) -> Result<()> {
     fs::hard_link(source, destination)
-        .with_context(|| format!("link verified Dragonball {kind} artifact"))?;
+        .with_context(|| format!("link Dragonball {kind} artifact"))?;
 
     let source = fs::metadata(source)?;
     let destination = fs::metadata(destination)?;
@@ -287,7 +287,7 @@ fn link_memory_artifact(source: &Path, destination: &Path, kind: &str) -> Result
     Ok(())
 }
 
-pub(super) const VERIFIED_MEMORY_DIGEST: &str = "memory.sha256";
+pub(super) const MEMORY_DIGEST: &str = "memory.sha256";
 
 // These inputs describe either a full memory save or a base plus dirty ranges.
 enum MemorySnapshot<'a> {
@@ -332,13 +332,13 @@ pub(super) fn checkpoint_memory(
             let overlay = state_dir.join("memory.overlay");
             let base_path = fs::read_link(format!("/proc/self/fd/{}", base.as_raw_fd()))?;
 
-            let base_sha256 = fs::read_to_string(base_path.with_file_name(VERIFIED_MEMORY_DIGEST))?;
+            let base_sha256 = fs::read_to_string(base_path.with_file_name(MEMORY_DIGEST))?;
             let base_size = base.metadata()?.len();
             if base_sha256.len() != 64
                 || !base_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
                 || base_size != source.metadata()?.len()
             {
-                return Err(anyhow!("invalid verified Dragonball memory base metadata"));
+                return Err(anyhow!("invalid Dragonball memory base metadata"));
             }
 
             let publish = (|| -> Result<()> {
@@ -403,24 +403,27 @@ pub(super) fn checkpoint_memory(
 
 #[cfg(test)]
 mod tests {
+    use super::super::super::file_integrity;
     use super::*;
+    use dragonball::snapshot::memory::verify_flat_sparse_file;
     use std::fs::OpenOptions;
-    use std::os::unix::fs::FileExt;
+    use std::os::unix::fs::{FileExt, PermissionsExt};
 
     #[test]
-    fn restore_rejects_invalid_memory_digests() {
+    fn restore_rejects_invalid_memory_sizes() {
         let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("source");
         fs::write(&source, b"guest-memory").unwrap();
-        let invalid_digest = "0".repeat(64);
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o400)).unwrap();
+        let inherited_digest = "0".repeat(64);
         let memory = directory.path().join("memory");
-        let invalid = restore_memory(&source, &memory, 12, &invalid_digest).unwrap_err();
+        let invalid = restore_memory(&source, &memory, 11, &inherited_digest).unwrap_err();
         assert!(matches!(
             invalid.downcast_ref::<ArtifactError>(),
             Some(ArtifactError::Invalid(_))
         ));
         assert!(!memory.exists());
-        assert!(!directory.path().join(VERIFIED_MEMORY_DIGEST).exists());
+        assert!(!directory.path().join(MEMORY_DIGEST).exists());
 
         let overlay = directory.path().join("memory.overlay");
         assert!(restore_overlay(
@@ -428,12 +431,17 @@ mod tests {
             &overlay,
             SparseMeta {
                 logical_size: 4096,
-                encoded_size: 12,
-                sha256: &invalid_digest,
+                encoded_size: 11,
             }
         )
         .is_err());
         assert!(!overlay.exists());
+
+        restore_memory(&source, &memory, 12, &inherited_digest).unwrap();
+        assert_eq!(
+            fs::read_to_string(directory.path().join(MEMORY_DIGEST)).unwrap(),
+            inherited_digest
+        );
     }
 
     #[test]
@@ -445,11 +453,7 @@ mod tests {
         let base_path = directory.path().join("memory");
         let base = fs::File::create(&base_path).unwrap();
         base.set_len(page * 2).unwrap();
-        fs::write(
-            directory.path().join(VERIFIED_MEMORY_DIGEST),
-            "a".repeat(64),
-        )
-        .unwrap();
+        fs::write(directory.path().join(MEMORY_DIGEST), "a".repeat(64)).unwrap();
         let mut delta = tempfile::tempfile().unwrap();
         delta.set_len(page * 2).unwrap();
         let ranges = [VmMemoryRange {
@@ -478,14 +482,14 @@ mod tests {
                 .unwrap();
             base.set_len(size).unwrap();
             base.write_all_at(&vec![0xa5; page as usize], 0).unwrap();
-            // The base digest is produced when a restored base is verified.
+            // The base digest is inherited from the checkpoint metadata.
             let digest = copy_flat_sparse_file(
                 &mut base.try_clone().unwrap(),
                 &directory.path().join("verified-base"),
             )
             .unwrap()
             .sha256;
-            fs::write(base_dir.join(VERIFIED_MEMORY_DIGEST), digest).unwrap();
+            fs::write(base_dir.join(MEMORY_DIGEST), digest).unwrap();
             let mut delta = tempfile::tempfile().unwrap();
             delta.set_len(size).unwrap();
             let ranges = [VmMemoryRange {
@@ -514,7 +518,6 @@ mod tests {
                     SparseMeta {
                         logical_size: size,
                         encoded_size: overlay.len() as u64,
-                        sha256: &artifacts[&state_dir.join("memory.overlay")].1.sha256,
                     },
                 )
                 .unwrap();
@@ -557,7 +560,7 @@ mod tests {
             )
             .unwrap()
             .sha256;
-            fs::write(base_dir.join(VERIFIED_MEMORY_DIGEST), &digest).unwrap();
+            fs::write(base_dir.join(MEMORY_DIGEST), &digest).unwrap();
             let mut delta = tempfile::tempfile().unwrap();
             delta.set_len(size).unwrap();
             let ranges = [VmMemoryRange {
