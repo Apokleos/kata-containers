@@ -1639,6 +1639,7 @@ dependencies = [
 name = "dbs-snapshot"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "serde_json",
  "thiserror 2.0.18",
 ]
@@ -1933,6 +1934,7 @@ dependencies = [
  "nix 0.31.3",
  "procfs 0.12.0",
  "prometheus",
+ "ring",
  "seccompiler",
  "serde",
  "serde_derive",
@@ -1943,6 +1945,7 @@ dependencies = [
  "slog-scope",
  "slog-term",
  "tdx",
+ "tempfile",
  "test-utils",
  "thiserror 2.0.18",
  "tracing",
@@ -3012,6 +3015,7 @@ dependencies = [
  "bytes 1.11.1",
  "ch-config",
  "crossbeam-channel",
+ "dbs-snapshot",
  "dbs-utils",
  "dragonball",
  "futures",
