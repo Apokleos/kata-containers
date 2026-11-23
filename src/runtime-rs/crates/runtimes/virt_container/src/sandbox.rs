@@ -533,12 +533,7 @@ impl VirtSandbox {
         Ok(())
     }
 
-    async fn record_stop(
-        &self,
-        exit_status: u32,
-        exited_at: std::time::SystemTime,
-        vmm_exited: bool,
-    ) {
+    async fn record_stop(&self, exit_status: u32, exited_at: SystemTime, vmm_exited: bool) {
         let mut inner = self.inner.write().await;
         // A watcher can confirm exit after stop() has already recorded a
         // synthetic status. Keep that confirmation without replacing the
@@ -1526,7 +1521,24 @@ impl Sandbox for VirtSandbox {
             return Ok(());
         }
 
-        let result = self.start_sandbox(&mut inner, sandbox_config).await;
+        let result: Result<()> = async {
+            let started = self
+                .prepare_and_start_vm(&mut inner, sandbox_config)
+                .await?;
+            self.run_hooks_and_finalize_network(sandbox_config, started)
+                .await?;
+            self.initialize_guest(sandbox_config).await?;
+
+            // get and store guest details
+            self.store_guest_details()
+                .await
+                .context("failed to store guest details")?;
+
+            self.save().await.context("save state")?;
+
+            Ok(())
+        }
+        .await;
 
         if let Err(start_error) = result {
             inner.start_failed = true;
@@ -1538,6 +1550,12 @@ impl Sandbox for VirtSandbox {
             }
             return Err(start_error);
         }
+
+        inner.state = SandboxState::Running;
+        inner.created_at = Some(SystemTime::now());
+
+        self.start_oom_watcher().await;
+        self.start_health_monitor();
 
         Ok(())
     }
