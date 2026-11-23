@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{BufReader, Read};
 use std::os::unix::fs::MetadataExt;
@@ -13,13 +13,59 @@ use std::time::Instant;
 use anyhow::{Context, Result};
 use common::error::Error as CommonError;
 use ring::digest::{Context as Sha256Context, SHA256};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
 use crate::factory::vm::VmConfig;
 use crate::sandbox::VirtSandbox;
 
 use super::manifest::CheckpointManifest;
+
+pub(super) const RUNTIME_ASSET_IDENTITY_OPTION: &str =
+    "io.katacontainers.checkpoint.runtime-assets";
+
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TrustedRuntimeFileIdentity {
+    path: PathBuf,
+    size: u64,
+    sha256: String,
+}
+
+fn runtime_asset_identities(
+    options: &HashMap<String, String>,
+) -> Result<HashMap<PathBuf, TrustedRuntimeFileIdentity>> {
+    let Some(value) = options.get(RUNTIME_ASSET_IDENTITY_OPTION) else {
+        return Ok(HashMap::new());
+    };
+
+    let entries: Vec<TrustedRuntimeFileIdentity> = serde_json::from_str(value).map_err(|err| {
+        CommonError::InvalidSandboxOperation(format!(
+            "decode trusted runtime asset identities: {err}"
+        ))
+    })?;
+
+    let mut result = HashMap::with_capacity(entries.len());
+    for entry in entries {
+        let path = entry.path.clone();
+        if !entry.path.is_absolute()
+            || entry.size == 0
+            || entry.sha256.len() != 64
+            || !entry
+                .sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            || result.insert(path, entry).is_some()
+        {
+            return Err(CommonError::InvalidSandboxOperation(
+                "invalid or duplicate trusted runtime asset identity".to_string(),
+            )
+            .into());
+        }
+    }
+
+    Ok(result)
+}
 
 #[derive(Eq, Hash, PartialEq)]
 struct RuntimeFileCacheKey {
@@ -127,7 +173,10 @@ pub(super) fn file_integrity(path: &Path) -> Result<(u64, String)> {
 }
 
 impl VirtSandbox {
-    fn runtime_file_identity(path: &str) -> Result<RuntimeFileIdentity> {
+    fn runtime_file_identity(
+        path: &str,
+        trusted: Option<&TrustedRuntimeFileIdentity>,
+    ) -> Result<RuntimeFileIdentity> {
         if path.is_empty() {
             return Ok(RuntimeFileIdentity {
                 size: 0,
@@ -143,6 +192,21 @@ impl VirtSandbox {
                 path.display()
             ))
             .into());
+        }
+
+        if let Some(trusted) = trusted {
+            if metadata.len() != trusted.size {
+                return Err(CommonError::InvalidSandboxOperation(format!(
+                    "trusted runtime asset size for {} does not match the runtime file",
+                    path.display()
+                ))
+                .into());
+            }
+
+            return Ok(RuntimeFileIdentity {
+                size: trusted.size,
+                sha256: trusted.sha256.clone(),
+            });
         }
 
         let key = runtime_cache_key(path, &metadata);
@@ -173,7 +237,7 @@ impl VirtSandbox {
 
     pub(super) async fn runtime_fingerprint(
         &self,
-        _options: &HashMap<String, String>,
+        options: &HashMap<String, String>,
     ) -> Result<String> {
         let started = Instant::now();
 
@@ -187,14 +251,47 @@ impl VirtSandbox {
             None
         };
 
+        let trusted = runtime_asset_identities(options)?;
         let permit = RUNTIME_FINGERPRINT_SEMAPHORE.acquire().await?;
 
         let fingerprint = tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            let hypervisor = Self::runtime_file_identity(&config.path)?;
-            let kernel = Self::runtime_file_identity(&config.boot_info.kernel)?;
-            let initrd = Self::runtime_file_identity(&config.boot_info.initrd)?;
-            let image = Self::runtime_file_identity(&config.boot_info.image)?;
+            let expected: HashSet<PathBuf> = [
+                &config.path,
+                &config.boot_info.kernel,
+                &config.boot_info.initrd,
+                &config.boot_info.image,
+            ]
+            .iter()
+            .filter(|path| !path.is_empty())
+            .map(PathBuf::from)
+            .collect();
+
+            if !trusted.is_empty()
+                && (trusted.len() != expected.len()
+                    || trusted.keys().any(|path| !expected.contains(path)))
+            {
+                return Err(CommonError::InvalidSandboxOperation(
+                    "runtime asset identities do not match the active runtime configuration"
+                        .to_string(),
+                )
+                .into());
+            }
+
+            let hypervisor =
+                Self::runtime_file_identity(&config.path, trusted.get(Path::new(&config.path)))?;
+            let kernel = Self::runtime_file_identity(
+                &config.boot_info.kernel,
+                trusted.get(Path::new(&config.boot_info.kernel)),
+            )?;
+            let initrd = Self::runtime_file_identity(
+                &config.boot_info.initrd,
+                trusted.get(Path::new(&config.boot_info.initrd)),
+            )?;
+            let image = Self::runtime_file_identity(
+                &config.boot_info.image,
+                trusted.get(Path::new(&config.boot_info.image)),
+            )?;
 
             if let Some((template, template_config)) = &template {
                 let assets = [
@@ -276,15 +373,59 @@ mod tests {
                 .as_nanos()
         ));
         fs::write(&path, b"abc").unwrap();
-        let first = VirtSandbox::runtime_file_identity(path.to_str().unwrap()).unwrap();
+        let first = VirtSandbox::runtime_file_identity(path.to_str().unwrap(), None).unwrap();
         assert_eq!(
             first.sha256,
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
 
         fs::write(&path, b"different size").unwrap();
-        let second = VirtSandbox::runtime_file_identity(path.to_str().unwrap()).unwrap();
+        let second = VirtSandbox::runtime_file_identity(path.to_str().unwrap(), None).unwrap();
         assert_ne!(first.sha256, second.sha256);
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn trusted_runtime_asset_uses_verified_digest_and_checks_size() {
+        let path = std::env::temp_dir().join(format!(
+            "kata-trusted-runtime-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(&path, b"abc").unwrap();
+        let trusted = TrustedRuntimeFileIdentity {
+            path: path.clone(),
+            size: 3,
+            sha256: "a".repeat(64),
+        };
+        let identity =
+            VirtSandbox::runtime_file_identity(path.to_str().unwrap(), Some(&trusted)).unwrap();
+        assert_eq!(identity.sha256, trusted.sha256);
+
+        fs::write(&path, b"changed-size").unwrap();
+        assert!(
+            VirtSandbox::runtime_file_identity(path.to_str().unwrap(), Some(&trusted)).is_err()
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn trusted_runtime_asset_option_is_strict() {
+        let mut options = HashMap::new();
+        options.insert(
+            RUNTIME_ASSET_IDENTITY_OPTION.to_string(),
+            r#"[{"path":"/runtime/kernel","size":3,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]"#.to_string(),
+        );
+        let parsed = runtime_asset_identities(&options).unwrap();
+        assert_eq!(parsed.len(), 1);
+
+        options.insert(
+            RUNTIME_ASSET_IDENTITY_OPTION.to_string(),
+            r#"[{"path":"relative","size":3,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]"#.to_string(),
+        );
+        assert!(runtime_asset_identities(&options).is_err());
     }
 }

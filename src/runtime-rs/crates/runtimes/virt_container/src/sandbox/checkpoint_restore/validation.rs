@@ -17,6 +17,7 @@ use kata_types::config::hypervisor::Hypervisor as HypervisorConfig;
 use crate::sandbox::VirtSandbox;
 
 use super::artifacts::IMMUTABLE_ROOTFS_OPTION;
+use super::identity::RUNTIME_ASSET_IDENTITY_OPTION;
 
 impl VirtSandbox {
     fn validate_ckpt_profile_config(
@@ -312,7 +313,7 @@ impl VirtSandbox {
 }
 
 fn checkpoint_option_supported(key: &str) -> bool {
-    key == IMMUTABLE_ROOTFS_OPTION
+    key == IMMUTABLE_ROOTFS_OPTION || key == RUNTIME_ASSET_IDENTITY_OPTION
 }
 
 #[cfg(test)]
@@ -335,6 +336,8 @@ mod tests {
 
     #[test]
     fn checkpoint_options_remain_allowlisted() {
+        assert!(checkpoint_option_supported(IMMUTABLE_ROOTFS_OPTION));
+        assert!(checkpoint_option_supported(RUNTIME_ASSET_IDENTITY_OPTION));
         assert!(!checkpoint_option_supported("unknown"));
     }
 }
