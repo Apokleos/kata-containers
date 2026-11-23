@@ -5,7 +5,9 @@
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufReader, Read};
-use std::path::Path;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -19,7 +21,34 @@ use crate::sandbox::VirtSandbox;
 
 use super::manifest::CheckpointManifest;
 
+#[derive(Eq, Hash, PartialEq)]
+struct RuntimeFileCacheKey {
+    path: PathBuf,
+    device: u64,
+    inode: u64,
+    size: u64,
+    modified_seconds: i64,
+    modified_nanoseconds: i64,
+    changed_seconds: i64,
+    changed_nanoseconds: i64,
+}
+
+static RUNTIME_FILE_DIGEST_CACHE: OnceLock<Mutex<HashMap<RuntimeFileCacheKey, String>>> =
+    OnceLock::new();
 pub(super) static RUNTIME_FINGERPRINT_SEMAPHORE: Semaphore = Semaphore::const_new(1);
+
+fn runtime_cache_key(path: &Path, metadata: &fs::Metadata) -> RuntimeFileCacheKey {
+    RuntimeFileCacheKey {
+        path: path.to_path_buf(),
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        size: metadata.len(),
+        modified_seconds: metadata.mtime(),
+        modified_nanoseconds: metadata.mtime_nsec(),
+        changed_seconds: metadata.ctime(),
+        changed_nanoseconds: metadata.ctime_nsec(),
+    }
+}
 
 #[derive(Serialize)]
 pub(super) struct RuntimeFileIdentity {
@@ -105,7 +134,40 @@ impl VirtSandbox {
                 sha256: String::new(),
             });
         }
-        let (size, sha256) = file_integrity(Path::new(path))?;
+
+        let path = Path::new(path);
+        let metadata = fs::metadata(path)?;
+        if !metadata.is_file() {
+            return Err(CommonError::InvalidSandboxOperation(format!(
+                "runtime asset {} is not a regular file",
+                path.display()
+            ))
+            .into());
+        }
+
+        let key = runtime_cache_key(path, &metadata);
+        let cache = RUNTIME_FILE_DIGEST_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        if let Some(sha256) = cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&key)
+            .cloned()
+        {
+            return Ok(RuntimeFileIdentity {
+                size: metadata.len(),
+                sha256,
+            });
+        }
+
+        let (size, sha256) = file_integrity(path)?;
+        let current_metadata = fs::metadata(path)?;
+        if key == runtime_cache_key(path, &current_metadata) {
+            cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .insert(key, sha256.clone());
+        }
+
         Ok(RuntimeFileIdentity { size, sha256 })
     }
 
@@ -204,7 +266,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn runtime_file_digest_is_standard_sha256() {
+    fn runtime_file_digest_is_standard_sha256_and_invalidates() {
         let path = std::env::temp_dir().join(format!(
             "kata-runtime-fingerprint-{}-{}",
             std::process::id(),
