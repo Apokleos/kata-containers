@@ -5,10 +5,11 @@
 use std::{sync::Arc, time::SystemTime};
 
 use agent::types::KernelModule;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use common::{
     error::is_normal_oom_shutdown_error,
     message::{Action, Message},
+    types::SandboxConfig,
     Sandbox,
 };
 use containerd_shim_protos::events::task::TaskOOM;
@@ -18,25 +19,16 @@ use resource::network::{dan_config_path, NetworkConfig, NetworkWithNetNsConfig};
 
 use crate::UNKNOWN_EXIT_STATUS;
 
-use super::{recordable_netns_path, SandboxState, VirtSandbox};
+use super::{recordable_netns_path, SandboxInner, SandboxState, VirtSandbox};
 
 impl VirtSandbox {
-    pub(super) async fn start_sandbox(&self) -> Result<()> {
+    pub(super) async fn start_sandbox(
+        &self,
+        inner: &mut SandboxInner,
+        sandbox_config: &SandboxConfig,
+    ) -> Result<()> {
         let id = &self.sid;
 
-        if self.sandbox_config.is_none() {
-            return Err(anyhow!("sandbox config is missing"));
-        }
-        let sandbox_config = self.sandbox_config.as_ref().unwrap();
-
-        // if sandbox is not in SandboxState::Init then return,
-        // otherwise try to create sandbox
-
-        let mut inner = self.inner.write().await;
-        if inner.state != SandboxState::Init {
-            warn!(sl!(), "sandbox is started");
-            return Ok(());
-        }
         let selinux_label = load_oci_spec().ok().and_then(|spec| {
             spec.process()
                 .as_ref()
@@ -214,13 +206,15 @@ impl VirtSandbox {
             .await
             .context("create sandbox")?;
 
-        inner.state = SandboxState::Running;
-        inner.created_at = Some(std::time::SystemTime::now());
-
         // get and store guest details
         self.store_guest_details()
             .await
             .context("failed to store guest details")?;
+
+        self.save().await.context("save state")?;
+
+        inner.state = SandboxState::Running;
+        inner.created_at = Some(std::time::SystemTime::now());
 
         let agent = self.agent.clone();
         let sender = self.msg_sender.clone();
@@ -285,7 +279,6 @@ impl VirtSandbox {
                 }
                 sandbox.vmm_exit_confirmed.is_cancelled()
             });
-        self.save().await.context("save state")?;
 
         Ok(())
     }

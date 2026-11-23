@@ -142,6 +142,9 @@ struct SandboxInner {
     state: SandboxState,
     exit_info: Option<SandboxExitInfo>,
     created_at: Option<SystemTime>,
+    // A failed start may have consumed restore state or created resources.
+    // Reject retries even before stop() records the sandbox as stopped.
+    start_failed: bool,
     /// start_vm() can fail after creating a process, before a watcher exists.
     vmm_start_attempted: bool,
     vmm_exit_watched: bool,
@@ -153,9 +156,21 @@ impl SandboxInner {
             state: SandboxState::Init,
             exit_info: None,
             created_at: None,
+            start_failed: false,
             vmm_start_attempted: false,
             vmm_exit_watched: false,
         }
+    }
+
+    fn needs_start(&self) -> Result<bool> {
+        if self.start_failed || self.state == SandboxState::Stopped {
+            return Err(common::error::Error::SandboxOperationPrecondition(
+                "cannot start a stopped sandbox or retry a failed sandbox start".to_string(),
+            )
+            .into());
+        }
+
+        Ok(self.state == SandboxState::Init)
     }
 }
 
@@ -1500,7 +1515,31 @@ fn oci_spec_vfio_device_paths() -> Vec<String> {
 impl Sandbox for VirtSandbox {
     #[instrument(name = "sb: start")]
     async fn start(&self) -> Result<()> {
-        self.start_sandbox().await
+        if self.sandbox_config.is_none() {
+            return Err(anyhow!("sandbox config is missing"));
+        }
+        let sandbox_config = self.sandbox_config.as_ref().unwrap();
+
+        let mut inner = self.inner.write().await;
+        if !inner.needs_start()? {
+            warn!(sl!(), "sandbox is started");
+            return Ok(());
+        }
+
+        let result = self.start_sandbox(&mut inner, sandbox_config).await;
+
+        if let Err(start_error) = result {
+            inner.start_failed = true;
+            drop(inner);
+            if let Err(stop_error) = self.stop().await {
+                return Err(start_error).context(format!(
+                    "failed to stop sandbox after start failure: {stop_error:#}"
+                ));
+            }
+            return Err(start_error);
+        }
+
+        Ok(())
     }
 
     /// Core function for starting a VM from a template
@@ -2628,6 +2667,23 @@ mod tests {
     use std::time::Duration;
 
     const NOTIFY_TIMEOUT: Duration = Duration::from_secs(5);
+
+    #[test]
+    fn start_admission_rejects_stopped_and_failed_sandboxes() {
+        let mut inner = SandboxInner::new();
+        assert!(inner.needs_start().unwrap());
+
+        inner.state = SandboxState::Running;
+        assert!(!inner.needs_start().unwrap());
+
+        inner.state = SandboxState::Stopped;
+        assert!(inner.needs_start().is_err());
+
+        // Reject a retry during the gap between releasing inner and stop().
+        inner.state = SandboxState::Init;
+        inner.start_failed = true;
+        assert!(inner.needs_start().is_err());
+    }
 
     #[tokio::test]
     async fn test_sandbox_exit_reaches_a_waiter_that_subscribes_afterwards() {
