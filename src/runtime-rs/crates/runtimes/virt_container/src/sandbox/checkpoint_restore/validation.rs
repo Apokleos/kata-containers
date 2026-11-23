@@ -22,7 +22,7 @@ use crate::factory::template::TemplateIdentity;
 use crate::sandbox::StartMode;
 
 use super::artifacts::{vm, IMMUTABLE_ROOTFS_OPTION};
-use super::identity::RUNTIME_ASSET_IDENTITY_OPTION;
+use super::identity::{HASH_BOOT_ASSETS_OPTION, RUNTIME_ASSET_IDENTITY_OPTION};
 use super::manifest::{CheckpointManifest, WORKLOAD_CHECKPOINT_FORMAT_VERSION};
 use super::PendingRestore;
 
@@ -622,7 +622,9 @@ fn validate_network_count(count: usize) -> Result<()> {
 }
 
 fn checkpoint_option_supported(key: &str) -> bool {
-    key == IMMUTABLE_ROOTFS_OPTION || key == RUNTIME_ASSET_IDENTITY_OPTION
+    key == IMMUTABLE_ROOTFS_OPTION
+        || key == RUNTIME_ASSET_IDENTITY_OPTION
+        || key == HASH_BOOT_ASSETS_OPTION
 }
 
 #[cfg(test)]
@@ -704,6 +706,7 @@ mod tests {
     fn checkpoint_options_remain_allowlisted() {
         assert!(checkpoint_option_supported(IMMUTABLE_ROOTFS_OPTION));
         assert!(checkpoint_option_supported(RUNTIME_ASSET_IDENTITY_OPTION));
+        assert!(checkpoint_option_supported(HASH_BOOT_ASSETS_OPTION));
         assert!(!checkpoint_option_supported("unknown"));
     }
     fn restore_inventory() -> (RestoreSandboxRequest, CheckpointManifest) {

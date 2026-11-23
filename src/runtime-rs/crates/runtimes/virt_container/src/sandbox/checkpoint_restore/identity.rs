@@ -21,6 +21,7 @@ use crate::sandbox::VirtSandbox;
 
 pub(super) const RUNTIME_ASSET_IDENTITY_OPTION: &str =
     "io.katacontainers.checkpoint.runtime-assets";
+pub(super) const HASH_BOOT_ASSETS_OPTION: &str = "io.katacontainers.checkpoint.hash-boot-assets";
 
 static RUNTIME_FILE_DIGEST_CACHE: OnceLock<Mutex<HashMap<RuntimeFileCacheKey, String>>> =
     OnceLock::new();
@@ -68,6 +69,26 @@ fn runtime_asset_identities(
     }
 
     Ok(result)
+}
+
+fn hash_boot_assets(
+    options: &HashMap<String, String>,
+    has_template: bool,
+    has_trusted_assets: bool,
+) -> Result<bool> {
+    let requested = match options.get(HASH_BOOT_ASSETS_OPTION).map(String::as_str) {
+        None | Some("false") => false,
+        Some("true") => true,
+        Some(_) => {
+            return Err(CommonError::InvalidSandboxOperation(format!(
+                "{HASH_BOOT_ASSETS_OPTION} must be true or false"
+            ))
+            .into())
+        }
+    };
+
+    // Template identity binds the boot asset contents to its VM config.
+    Ok(requested || (has_template && !has_trusted_assets))
 }
 
 #[derive(Eq, Hash, PartialEq)]
@@ -122,7 +143,11 @@ pub(super) struct RuntimeIdentity {
 }
 
 impl RuntimeFileIdentity {
-    fn load(path: &str, trusted: Option<&TrustedRuntimeFileIdentity>) -> Result<Self> {
+    fn load(
+        path: &str,
+        trusted: Option<&TrustedRuntimeFileIdentity>,
+        hash_contents: bool,
+    ) -> Result<Self> {
         if path.is_empty() {
             return Ok(RuntimeFileIdentity {
                 size: 0,
@@ -152,6 +177,13 @@ impl RuntimeFileIdentity {
             return Ok(RuntimeFileIdentity {
                 size: trusted.size,
                 sha256: trusted.sha256.clone(),
+            });
+        }
+
+        if !hash_contents {
+            return Ok(RuntimeFileIdentity {
+                size: metadata.len(),
+                sha256: String::new(),
             });
         }
 
@@ -216,6 +248,7 @@ impl VirtSandbox {
         };
 
         let trusted = runtime_asset_identities(options)?;
+        let hash_boot_assets = hash_boot_assets(options, template.is_some(), !trusted.is_empty())?;
         let permit = RUNTIME_FINGERPRINT_SEMAPHORE.acquire().await?;
 
         let fingerprint = tokio::task::spawn_blocking(move || {
@@ -242,19 +275,33 @@ impl VirtSandbox {
                 .into());
             }
 
-            let hypervisor =
-                RuntimeFileIdentity::load(&config.path, trusted.get(Path::new(&config.path)))?;
+            let hypervisor = RuntimeFileIdentity::load(
+                &config.path,
+                trusted.get(Path::new(&config.path)),
+                true,
+            )?;
             let kernel = RuntimeFileIdentity::load(
                 &config.boot_info.kernel,
-                trusted.get(Path::new(&config.boot_info.kernel)),
+                if hash_boot_assets {
+                    None
+                } else {
+                    trusted.get(Path::new(&config.boot_info.kernel))
+                },
+                hash_boot_assets,
             )?;
             let initrd = RuntimeFileIdentity::load(
                 &config.boot_info.initrd,
                 trusted.get(Path::new(&config.boot_info.initrd)),
+                true,
             )?;
             let image = RuntimeFileIdentity::load(
                 &config.boot_info.image,
-                trusted.get(Path::new(&config.boot_info.image)),
+                if hash_boot_assets {
+                    None
+                } else {
+                    trusted.get(Path::new(&config.boot_info.image))
+                },
+                hash_boot_assets,
             )?;
 
             if let Some((template, template_config)) = &template {
@@ -337,14 +384,14 @@ mod tests {
                 .as_nanos()
         ));
         fs::write(&path, b"abc").unwrap();
-        let first = RuntimeFileIdentity::load(path.to_str().unwrap(), None).unwrap();
+        let first = RuntimeFileIdentity::load(path.to_str().unwrap(), None, true).unwrap();
         assert_eq!(
             first.sha256,
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
 
         fs::write(&path, b"different size").unwrap();
-        let second = RuntimeFileIdentity::load(path.to_str().unwrap(), None).unwrap();
+        let second = RuntimeFileIdentity::load(path.to_str().unwrap(), None, true).unwrap();
         assert_ne!(first.sha256, second.sha256);
         fs::remove_file(path).unwrap();
     }
@@ -365,12 +412,49 @@ mod tests {
             size: 3,
             sha256: "a".repeat(64),
         };
-        let identity = RuntimeFileIdentity::load(path.to_str().unwrap(), Some(&trusted)).unwrap();
+        let identity =
+            RuntimeFileIdentity::load(path.to_str().unwrap(), Some(&trusted), false).unwrap();
         assert_eq!(identity.sha256, trusted.sha256);
 
         fs::write(&path, b"changed-size").unwrap();
-        assert!(RuntimeFileIdentity::load(path.to_str().unwrap(), Some(&trusted)).is_err());
+        assert!(RuntimeFileIdentity::load(path.to_str().unwrap(), Some(&trusted), false).is_err());
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn boot_asset_hashing_is_disabled_by_default() {
+        let path = std::env::temp_dir().join(format!(
+            "kata-boot-asset-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(&path, b"abc").unwrap();
+        let first = RuntimeFileIdentity::load(path.to_str().unwrap(), None, false).unwrap();
+        assert_eq!(first.size, 3);
+        assert!(first.sha256.is_empty());
+        let strict = RuntimeFileIdentity::load(path.to_str().unwrap(), None, true).unwrap();
+        assert_eq!(
+            strict.sha256,
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+
+        fs::write(&path, b"xyz").unwrap();
+        let second = RuntimeFileIdentity::load(path.to_str().unwrap(), None, false).unwrap();
+        assert_eq!(first.size, second.size);
+        assert_eq!(first.sha256, second.sha256);
+        fs::remove_file(path).unwrap();
+
+        let mut options = HashMap::new();
+        assert!(!hash_boot_assets(&options, false, false).unwrap());
+        assert!(hash_boot_assets(&options, true, false).unwrap());
+        assert!(!hash_boot_assets(&options, true, true).unwrap());
+        options.insert(HASH_BOOT_ASSETS_OPTION.to_string(), "true".to_string());
+        assert!(hash_boot_assets(&options, false, false).unwrap());
+        options.insert(HASH_BOOT_ASSETS_OPTION.to_string(), "invalid".to_string());
+        assert!(hash_boot_assets(&options, false, false).is_err());
     }
 
     #[test]
