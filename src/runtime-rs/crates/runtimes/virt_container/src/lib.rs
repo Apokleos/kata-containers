@@ -190,6 +190,7 @@ impl RuntimeHandler for VirtContainer {
             resource_manager.clone(),
             sandbox_config,
             factory,
+            None,
         )
         .await
         .context("new virt sandbox")?;
