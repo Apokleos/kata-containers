@@ -50,6 +50,24 @@ pub(crate) struct TemplateIdentity {
     pub(crate) native_config_sha256: Option<String>,
 }
 
+impl TemplateIdentity {
+    /// Reuse the C/R worker's boot-asset digests instead of reading them again.
+    pub(crate) fn verify_vm_config(
+        &self,
+        config: &VmConfig,
+        asset_sha256: impl FnMut(&str) -> Result<String>,
+    ) -> Result<()> {
+        let actual = Template::config_sha256_with_assets(config, asset_sha256)?;
+        if actual != self.config_sha256 {
+            return Err(anyhow!(
+                "VM template configuration or boot assets do not match"
+            ));
+        }
+
+        Ok(())
+    }
+}
+
 #[derive(Debug)]
 pub struct Template {
     pub state_path: PathBuf,
@@ -280,8 +298,8 @@ impl Template {
             ));
         }
 
-        let file = File::open(path)
-            .context(format!("open template artifact {}", path.display()))?;
+        let file =
+            File::open(path).context(format!("open template artifact {}", path.display()))?;
         let mut reader = BufReader::new(file);
         let mut hasher = Sha256Context::new(&SHA256);
         let mut buffer = vec![0_u8; 1024 * 1024];
@@ -420,8 +438,7 @@ impl Template {
             return Err(anyhow!("VM template identity is not a regular file"));
         }
 
-        let identity: TemplateIdentity =
-            serde_json::from_slice(&std::fs::read(&identity_path)?)
+        let identity: TemplateIdentity = serde_json::from_slice(&std::fs::read(&identity_path)?)
             .context("decode template identity")?;
 
         if identity.format_version != TEMPLATE_IDENTITY_FORMAT_VERSION {
@@ -518,6 +535,31 @@ mod tests {
         assert!(error
             .to_string()
             .contains("VM template identity does not match its artifacts"));
+        std::fs::remove_dir_all(&template.state_path).unwrap();
+    }
+
+    #[test]
+    fn template_identity_verifies_vm_config_with_external_asset_digests() {
+        let mut template = test_template();
+        let asset = template.state_path.join("initrd");
+        std::fs::write(&asset, b"agent version A").unwrap();
+        template.config.hypervisor_config.boot_info.initrd = asset.display().to_string();
+        template.save_vm_config().unwrap();
+        let identity = template.publish_identity().unwrap();
+        let digest = Template::file_integrity(&asset).unwrap().1;
+        std::fs::remove_file(&asset).unwrap();
+
+        identity
+            .verify_vm_config(&template.config, |_| Ok(digest.clone()))
+            .unwrap();
+        assert!(identity
+            .verify_vm_config(&template.config, |_| Ok("a".repeat(64)))
+            .is_err());
+        let mut incompatible = template.config.clone();
+        incompatible.hypervisor_config.memory_info.default_memory += 128;
+        assert!(identity
+            .verify_vm_config(&incompatible, |_| Ok(digest.clone()))
+            .is_err());
         std::fs::remove_dir_all(&template.state_path).unwrap();
     }
 
