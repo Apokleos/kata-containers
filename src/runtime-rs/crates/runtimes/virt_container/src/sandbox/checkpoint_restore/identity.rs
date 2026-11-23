@@ -4,7 +4,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::{BufReader, Read};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
@@ -17,12 +16,16 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 
 use crate::factory::vm::VmConfig;
+use crate::sandbox::checkpoint_restore::file_integrity;
 use crate::sandbox::VirtSandbox;
-
-use super::manifest::CheckpointManifest;
 
 pub(super) const RUNTIME_ASSET_IDENTITY_OPTION: &str =
     "io.katacontainers.checkpoint.runtime-assets";
+
+static RUNTIME_FILE_DIGEST_CACHE: OnceLock<Mutex<HashMap<RuntimeFileCacheKey, String>>> =
+    OnceLock::new();
+
+pub(super) static RUNTIME_FINGERPRINT_SEMAPHORE: Semaphore = Semaphore::const_new(1);
 
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -78,21 +81,18 @@ struct RuntimeFileCacheKey {
     changed_seconds: i64,
     changed_nanoseconds: i64,
 }
-
-static RUNTIME_FILE_DIGEST_CACHE: OnceLock<Mutex<HashMap<RuntimeFileCacheKey, String>>> =
-    OnceLock::new();
-pub(super) static RUNTIME_FINGERPRINT_SEMAPHORE: Semaphore = Semaphore::const_new(1);
-
-fn runtime_cache_key(path: &Path, metadata: &fs::Metadata) -> RuntimeFileCacheKey {
-    RuntimeFileCacheKey {
-        path: path.to_path_buf(),
-        device: metadata.dev(),
-        inode: metadata.ino(),
-        size: metadata.len(),
-        modified_seconds: metadata.mtime(),
-        modified_nanoseconds: metadata.mtime_nsec(),
-        changed_seconds: metadata.ctime(),
-        changed_nanoseconds: metadata.ctime_nsec(),
+impl RuntimeFileCacheKey {
+    fn new(path: &Path, metadata: &fs::Metadata) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            size: metadata.len(),
+            modified_seconds: metadata.mtime(),
+            modified_nanoseconds: metadata.mtime_nsec(),
+            changed_seconds: metadata.ctime(),
+            changed_nanoseconds: metadata.ctime_nsec(),
+        }
     }
 }
 
@@ -121,62 +121,8 @@ pub(super) struct RuntimeIdentity {
     pub(super) shared_fs: Option<String>,
 }
 
-impl VirtSandbox {
-    pub(super) async fn verify_runtime_fingerprint(
-        &self,
-        manifest: &CheckpointManifest,
-        options: &HashMap<String, String>,
-    ) -> Result<()> {
-        let actual = self.runtime_fingerprint(options).await?;
-        if manifest.runtime_fingerprint != actual {
-            return Err(CommonError::SandboxOperationPrecondition(
-                "checkpoint runtime fingerprint does not match this runtime".to_string(),
-            )
-            .into());
-        }
-
-        Ok(())
-    }
-}
-
-pub(super) fn file_integrity(path: &Path) -> Result<(u64, String)> {
-    let file =
-        fs::File::open(path).context(format!("open checkpoint artifact {}", path.display()))?;
-    let size = file.metadata()?.len();
-
-    let mut reader = BufReader::new(file);
-    let mut hasher = Sha256Context::new(&SHA256);
-
-    // This helper runs from Tokio worker tasks whose stacks are small.
-    // Keep the large I/O buffer on the heap to avoid aborting a deeply
-    // nested Restore call with a worker-stack overflow.
-    let mut buffer = vec![0_u8; 1024 * 1024];
-    loop {
-        let count = reader
-            .read(&mut buffer)
-            .context(format!("read checkpoint artifact {}", path.display()))?;
-        if count == 0 {
-            break;
-        }
-
-        hasher.update(&buffer[..count]);
-    }
-
-    let digest = hasher.finish();
-    let sha256 = digest
-        .as_ref()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-
-    Ok((size, sha256))
-}
-
-impl VirtSandbox {
-    fn runtime_file_identity(
-        path: &str,
-        trusted: Option<&TrustedRuntimeFileIdentity>,
-    ) -> Result<RuntimeFileIdentity> {
+impl RuntimeFileIdentity {
+    fn load(path: &str, trusted: Option<&TrustedRuntimeFileIdentity>) -> Result<Self> {
         if path.is_empty() {
             return Ok(RuntimeFileIdentity {
                 size: 0,
@@ -209,7 +155,7 @@ impl VirtSandbox {
             });
         }
 
-        let key = runtime_cache_key(path, &metadata);
+        let key = RuntimeFileCacheKey::new(path, &metadata);
         let cache = RUNTIME_FILE_DIGEST_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
         if let Some(sha256) = cache
             .lock()
@@ -225,7 +171,7 @@ impl VirtSandbox {
 
         let (size, sha256) = file_integrity(path)?;
         let current_metadata = fs::metadata(path)?;
-        if key == runtime_cache_key(path, &current_metadata) {
+        if key == RuntimeFileCacheKey::new(path, &current_metadata) {
             cache
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -233,6 +179,24 @@ impl VirtSandbox {
         }
 
         Ok(RuntimeFileIdentity { size, sha256 })
+    }
+}
+
+impl VirtSandbox {
+    pub(super) async fn verify_runtime_fingerprint(
+        &self,
+        runtime_fingerprint: &str,
+        options: &HashMap<String, String>,
+    ) -> Result<()> {
+        let actual = self.runtime_fingerprint(options).await?;
+        if runtime_fingerprint != actual {
+            return Err(CommonError::SandboxOperationPrecondition(
+                "checkpoint runtime fingerprint does not match this runtime".to_string(),
+            )
+            .into());
+        }
+
+        Ok(())
     }
 
     pub(super) async fn runtime_fingerprint(
@@ -279,16 +243,16 @@ impl VirtSandbox {
             }
 
             let hypervisor =
-                Self::runtime_file_identity(&config.path, trusted.get(Path::new(&config.path)))?;
-            let kernel = Self::runtime_file_identity(
+                RuntimeFileIdentity::load(&config.path, trusted.get(Path::new(&config.path)))?;
+            let kernel = RuntimeFileIdentity::load(
                 &config.boot_info.kernel,
                 trusted.get(Path::new(&config.boot_info.kernel)),
             )?;
-            let initrd = Self::runtime_file_identity(
+            let initrd = RuntimeFileIdentity::load(
                 &config.boot_info.initrd,
                 trusted.get(Path::new(&config.boot_info.initrd)),
             )?;
-            let image = Self::runtime_file_identity(
+            let image = RuntimeFileIdentity::load(
                 &config.boot_info.image,
                 trusted.get(Path::new(&config.boot_info.image)),
             )?;
@@ -373,14 +337,14 @@ mod tests {
                 .as_nanos()
         ));
         fs::write(&path, b"abc").unwrap();
-        let first = VirtSandbox::runtime_file_identity(path.to_str().unwrap(), None).unwrap();
+        let first = RuntimeFileIdentity::load(path.to_str().unwrap(), None).unwrap();
         assert_eq!(
             first.sha256,
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
 
         fs::write(&path, b"different size").unwrap();
-        let second = VirtSandbox::runtime_file_identity(path.to_str().unwrap(), None).unwrap();
+        let second = RuntimeFileIdentity::load(path.to_str().unwrap(), None).unwrap();
         assert_ne!(first.sha256, second.sha256);
         fs::remove_file(path).unwrap();
     }
@@ -401,14 +365,11 @@ mod tests {
             size: 3,
             sha256: "a".repeat(64),
         };
-        let identity =
-            VirtSandbox::runtime_file_identity(path.to_str().unwrap(), Some(&trusted)).unwrap();
+        let identity = RuntimeFileIdentity::load(path.to_str().unwrap(), Some(&trusted)).unwrap();
         assert_eq!(identity.sha256, trusted.sha256);
 
         fs::write(&path, b"changed-size").unwrap();
-        assert!(
-            VirtSandbox::runtime_file_identity(path.to_str().unwrap(), Some(&trusted)).is_err()
-        );
+        assert!(RuntimeFileIdentity::load(path.to_str().unwrap(), Some(&trusted)).is_err());
         fs::remove_file(path).unwrap();
     }
 
