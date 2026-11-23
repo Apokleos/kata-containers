@@ -17,6 +17,8 @@ use tokio::sync::Semaphore;
 use crate::factory::vm::VmConfig;
 use crate::sandbox::VirtSandbox;
 
+use super::manifest::CheckpointManifest;
+
 pub(super) static RUNTIME_FINGERPRINT_SEMAPHORE: Semaphore = Semaphore::const_new(1);
 
 #[derive(Serialize)]
@@ -42,6 +44,24 @@ pub(super) struct RuntimeIdentity {
     pub(super) memory_slots: u32,
     pub(super) block_device_driver: String,
     pub(super) shared_fs: Option<String>,
+}
+
+impl VirtSandbox {
+    pub(super) async fn verify_runtime_fingerprint(
+        &self,
+        manifest: &CheckpointManifest,
+        options: &HashMap<String, String>,
+    ) -> Result<()> {
+        let actual = self.runtime_fingerprint(options).await?;
+        if manifest.runtime_fingerprint != actual {
+            return Err(CommonError::SandboxOperationPrecondition(
+                "checkpoint runtime fingerprint does not match this runtime".to_string(),
+            )
+            .into());
+        }
+
+        Ok(())
+    }
 }
 
 pub(super) fn file_integrity(path: &Path) -> Result<(u64, String)> {
