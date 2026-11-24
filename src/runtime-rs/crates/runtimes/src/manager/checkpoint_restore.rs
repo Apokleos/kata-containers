@@ -174,6 +174,19 @@ async fn run_checkpoint_transaction(
         ))
     })?;
 
+    if let Err(sync_err) = cm.sync_checkpoint_filesystems(&req.tasks).await {
+        let checkpoint_err: anyhow::Error = CommonError::SandboxOperationPrecondition(format!(
+            "cannot sync checkpoint filesystems: {sync_err:#}"
+        ))
+        .into();
+        return match cm.resume_checkpoint_tasks(&req.tasks).await {
+            Ok(()) => Err(checkpoint_err),
+            Err(resume_err) => Err(checkpoint_err).context(format!(
+                "resume checkpoint tasks after filesystem sync failure; resume also failed: {resume_err:#}"
+            )),
+        };
+    }
+
     if let Some(timeout) = operation_timeout {
         let remaining = timeout.saturating_sub(started.elapsed());
         if remaining.is_zero() {
@@ -294,10 +307,15 @@ mod tests {
 
     struct TestCheckpointContainers {
         calls: Arc<Mutex<Vec<&'static str>>>,
+        fail_sync: bool,
     }
 
     #[async_trait]
     impl ContainerCheckpointRestore for TestCheckpointContainers {
+        async fn ensure_restore_tasks_consumed(&self) -> Result<()> {
+            Ok(())
+        }
+
         async fn prepare_checkpoint_tasks(&self, _: &mut [SandboxCheckpointTask]) -> Result<()> {
             self.calls.lock().unwrap().push("prepare");
             Ok(())
@@ -306,6 +324,15 @@ mod tests {
         async fn pause_checkpoint_tasks(&self, _: &[SandboxCheckpointTask]) -> Result<()> {
             self.calls.lock().unwrap().push("pause");
             Ok(())
+        }
+
+        async fn sync_checkpoint_filesystems(&self, _: &[SandboxCheckpointTask]) -> Result<()> {
+            self.calls.lock().unwrap().push("sync");
+            if self.fail_sync {
+                Err(anyhow!("forced filesystem sync failure"))
+            } else {
+                Ok(())
+            }
         }
 
         async fn resume_checkpoint_tasks(&self, _: &[SandboxCheckpointTask]) -> Result<()> {
@@ -365,6 +392,7 @@ mod tests {
                 "prepare",
                 "validate",
                 "pause",
+                "sync",
                 "checkpoint",
                 "resume",
                 "cleanup"
@@ -376,7 +404,14 @@ mod tests {
     async fn checkpoint_failure_keeps_output_owned_by_another_attempt() {
         assert_eq!(
             checkpoint_failure_calls(false).await,
-            ["prepare", "validate", "pause", "checkpoint", "resume"]
+            [
+                "prepare",
+                "validate",
+                "pause",
+                "sync",
+                "checkpoint",
+                "resume"
+            ]
         );
     }
 
@@ -389,6 +424,7 @@ mod tests {
             }),
             container_manager: Arc::new(TestCheckpointContainers {
                 calls: calls.clone(),
+                fail_sync: false,
             }),
         };
         let request = CheckpointSandboxRequest {
@@ -404,5 +440,39 @@ mod tests {
         assert!(result.is_err());
         let observed = calls.lock().unwrap();
         observed.clone()
+    }
+
+    #[tokio::test]
+    async fn filesystem_sync_failure_resumes_tasks_without_checkpointing() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let runtime = CheckpointRestoreRuntime {
+            sandbox: Arc::new(TestCheckpointSandbox {
+                calls: calls.clone(),
+                owns_output: false,
+            }),
+            container_manager: Arc::new(TestCheckpointContainers {
+                calls: calls.clone(),
+                fail_sync: true,
+            }),
+        };
+        let request = CheckpointSandboxRequest {
+            sandbox_id: "sandbox".to_string(),
+            output_path: "/checkpoint".to_string(),
+            tasks: Vec::new(),
+            options: HashMap::new(),
+            operation_timeout: None,
+        };
+
+        let error = run_checkpoint_transaction(&runtime, request)
+            .await
+            .expect_err("filesystem sync must fail the checkpoint transaction");
+
+        assert!(error
+            .to_string()
+            .contains("cannot sync checkpoint filesystems"));
+        assert_eq!(
+            *calls.lock().unwrap(),
+            ["prepare", "validate", "pause", "sync", "resume"]
+        );
     }
 }

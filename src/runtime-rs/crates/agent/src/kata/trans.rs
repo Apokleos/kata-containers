@@ -23,10 +23,10 @@ use crate::{
         OnlineCPUMemRequest, PidsStats, ReadStreamRequest, ReadStreamResponse,
         RemoveContainerRequest, ReseedRandomDevRequest, ResizeVolumeRequest, Route, Routes,
         SetGuestDateTimeRequest, SetIPTablesRequest, SetIPTablesResponse, SharedMount,
-        SignalProcessRequest, StatsContainerResponse, Storage, StringUser, ThrottlingData,
-        TtyWinResizeRequest, UpdateContainerRequest, UpdateInterfaceRequest, UpdateRoutesRequest,
-        VersionCheckResponse, VolumeStatsRequest, VolumeStatsResponse, WaitProcessRequest,
-        WriteStreamRequest,
+        SignalProcessRequest, StatsContainerResponse, Storage, StringUser,
+        SyncContainerFilesystemsRequest, ThrottlingData, TtyWinResizeRequest,
+        UpdateContainerRequest, UpdateInterfaceRequest, UpdateRoutesRequest, VersionCheckResponse,
+        VolumeStatsRequest, VolumeStatsResponse, WaitProcessRequest, WriteStreamRequest,
     },
     GetDiagnosticDataRequest, GetDiagnosticDataResponse, GetGuestDetailsRequest, OomEventResponse,
     SetPolicyRequest, WaitProcessResponse, WriteStreamResponse,
@@ -329,6 +329,15 @@ impl From<ContainerID> for agent::ResumeContainerRequest {
     fn from(from: ContainerID) -> Self {
         Self {
             container_id: from.container_id,
+            ..Default::default()
+        }
+    }
+}
+
+impl From<SyncContainerFilesystemsRequest> for agent::SyncContainerFilesystemsRequest {
+    fn from(from: SyncContainerFilesystemsRequest) -> Self {
+        Self {
+            container_ids: from.container_ids,
             ..Default::default()
         }
     }

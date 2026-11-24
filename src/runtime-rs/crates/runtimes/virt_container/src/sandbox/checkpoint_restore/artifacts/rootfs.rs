@@ -2,20 +2,24 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+use super::super::ensure_artifact_deadline;
 use super::super::{
     manifest::{CheckpointRootfs, CheckpointTask, ImmutableRootfs, WORKLOAD_CHECKPOINT_STORAGE},
     sparse::{decode_sparse_artifact, encode_sparse_artifact, SparseMeta, SPARSE_FORMAT},
 };
 use super::run_artifact_worker;
+use crate::sandbox::VirtSandbox;
 use anyhow::{Context, Result};
 use common::{error::Error as CommonError, types::SandboxCheckpointTask};
 use hypervisor::{BlockConfigModern, BlockDeviceAio, BlockDeviceModern, BlockSourceFormat};
+use resource::rootfs::writable_snapshot::{VerifiedArtifact, VerifiedArtifactIdentity};
 use serde::Deserialize;
 use std::{
     collections::HashMap,
     fs::{self, OpenOptions},
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
-    path::Path,
+    os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+    path::{Path, PathBuf},
+    sync::Arc,
     time::Instant,
 };
 
@@ -92,6 +96,62 @@ pub(in crate::sandbox::checkpoint_restore) struct RootfsCheckpoint<'a> {
     pub(in crate::sandbox::checkpoint_restore) tasks: &'a [SandboxCheckpointTask],
     pub(in crate::sandbox::checkpoint_restore) options: &'a HashMap<String, String>,
     pub(in crate::sandbox::checkpoint_restore) blocks: Vec<BlockDeviceModern>,
+}
+
+impl VirtSandbox {
+    pub(in crate::sandbox::checkpoint_restore) async fn verify_cold_restore_artifact(
+        path: PathBuf,
+        expected_size: u64,
+        deadline: Option<Instant>,
+    ) -> Result<VerifiedArtifact> {
+        tokio::task::spawn_blocking(move || {
+            ensure_artifact_deadline(deadline, "cold restore artifact verification")?;
+            let file = OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NOFOLLOW)
+                .open(&path)
+                .with_context(|| format!("open cold restore artifact {}", path.display()))?;
+            let before = file.metadata()?;
+            if !before.is_file()
+                || before.len() != expected_size
+                || before.permissions().mode() & 0o222 != 0
+            {
+                return Err(CommonError::InvalidSandboxOperation(format!(
+                    "cold restore artifact {} is invalid",
+                    path.display()
+                ))
+                .into());
+            }
+
+            let after = file.metadata()?;
+            if after.len() != expected_size
+                || before.dev() != after.dev()
+                || before.ino() != after.ino()
+                || before.ctime() != after.ctime()
+                || before.ctime_nsec() != after.ctime_nsec()
+            {
+                return Err(CommonError::InvalidSandboxOperation(format!(
+                    "cold restore artifact {} changed during metadata validation",
+                    path.display()
+                ))
+                .into());
+            }
+            Ok(VerifiedArtifact {
+                path,
+                file: Arc::new(file),
+                size: after.len(),
+                identity: VerifiedArtifactIdentity {
+                    device: after.dev(),
+                    inode: after.ino(),
+                    ctime_seconds: after.ctime(),
+                    ctime_nanoseconds: after.ctime_nsec(),
+                },
+                deadline,
+            })
+        })
+        .await
+        .context("cold restore artifact worker failed")?
+    }
 }
 
 impl RootfsCheckpoint<'_> {
@@ -446,7 +506,7 @@ impl RootfsRestore<'_> {
                 sync_private_copy,
             )?;
 
-            debug!(
+            info!(
                 sl!(),
                 "decoded canonical sparse rootfs artifact";
                 "logical_bytes" => logical_size,
@@ -556,6 +616,11 @@ mod tests {
             checkpoint_key: "app".into(),
             task_id: "old-app".into(),
             rootfs_device_ids: vec!["rootfs-device".into()],
+            rootfs_external_device_ids: vec!["rootfs-device".into()],
+            writable_layer: None,
+            base_image: None,
+            reconnect_only_host_directories: Vec::new(),
+            has_undeclared_mounts: false,
         }];
         let block = BlockDeviceModern {
             device_id: "rootfs-device".into(),
@@ -602,6 +667,7 @@ mod tests {
             tasks: &[CheckpointTask {
                 checkpoint_key: "app".into(),
                 task_id: "old-app".into(),
+                ..Default::default()
             }],
             options: &options,
             rootfs: &artifacts,

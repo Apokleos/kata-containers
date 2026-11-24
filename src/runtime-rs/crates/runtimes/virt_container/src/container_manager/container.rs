@@ -143,7 +143,11 @@ impl Container {
         })
     }
 
-    pub async fn create(&self, mut spec: oci::Spec) -> Result<()> {
+    pub async fn create(&self, spec: oci::Spec) -> Result<()> {
+        self.create_inner(spec).await
+    }
+
+    async fn create_inner(&self, mut spec: oci::Spec) -> Result<()> {
         // process oci spec
         let mut inner = self.inner.write().await;
         let toml_config = self.resource_manager.config().await;

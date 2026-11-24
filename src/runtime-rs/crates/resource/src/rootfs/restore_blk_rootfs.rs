@@ -9,7 +9,7 @@ use hypervisor::device::device_manager::DeviceManager;
 use oci_spec::runtime as oci;
 use tokio::sync::RwLock;
 
-use super::Rootfs;
+use super::{Rootfs, WritableLayer};
 
 pub(super) struct RestoredBlockRootfs {
     device_ids: Vec<String>,
@@ -23,9 +23,25 @@ impl RestoredBlockRootfs {
 
 #[async_trait]
 impl Rootfs for RestoredBlockRootfs {
+    fn writable_layer(&self) -> WritableLayer {
+        self.device_ids.first().map_or_else(
+            || WritableLayer::Unknown {
+                reason: "restored block rootfs has no device".to_string(),
+            },
+            |device_id| WritableLayer::ExternalBlock {
+                device_id: device_id.clone(),
+                fs_type: None,
+            },
+        )
+    }
+
+    fn external_device_ids(&self) -> Vec<String> {
+        self.device_ids.clone()
+    }
+
     async fn get_guest_rootfs_path(&self) -> Result<String> {
         Err(anyhow!(
-            "restored block rootfs does not support provisioning guest paths"
+            "full-state restored block rootfs has no provisioning guest path"
         ))
     }
 

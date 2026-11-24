@@ -17,7 +17,7 @@
 use std::path::PathBuf;
 use std::{fs, path::Path, sync::Arc};
 
-use super::{Rootfs, TYPE_OVERLAY_FS};
+use super::{Rootfs, WritableLayer, TYPE_OVERLAY_FS};
 use crate::rootfs::HYBRID_ROOTFS_LOWER_DIR;
 use crate::{
     rootfs::ROOTFS,
@@ -373,6 +373,16 @@ impl NydusRootfs {
 
 #[async_trait]
 impl Rootfs for NydusRootfs {
+    fn writable_layer(&self) -> WritableLayer {
+        WritableLayer::Unknown {
+            reason: "nydus writable backing has not been proven".to_string(),
+        }
+    }
+
+    fn external_device_ids(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     async fn get_guest_rootfs_path(&self) -> Result<String> {
         Ok(self.guest_path.clone())
     }

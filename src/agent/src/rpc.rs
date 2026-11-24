@@ -63,7 +63,6 @@ use nix::mount::MsFlags;
 use nix::sys::{stat, statfs};
 use nix::unistd::{self, Pid};
 use rustjail::process::ProcessOperations;
-#[cfg(all(test, not(target_arch = "powerpc64")))]
 use std::os::fd::AsRawFd;
 
 #[cfg(target_arch = "s390x")]
@@ -1131,6 +1130,64 @@ impl agent_ttrpc::AgentService for AgentService {
             .get_container(&req.container_id)
             .map_ttrpc_err(ttrpc::Code::INVALID_ARGUMENT, "invalid container id")?;
         ctr.resume().map_ttrpc_err(same)?;
+        Ok(Empty::new())
+    }
+
+    async fn sync_container_filesystems(
+        &self,
+        ctx: &TtrpcContext,
+        req: protocols::agent::SyncContainerFilesystemsRequest,
+    ) -> ttrpc::Result<protocols::empty::Empty> {
+        trace_rpc_call!(ctx, "sync_container_filesystems", req);
+        is_allowed(&req).await?;
+
+        if req.container_ids.is_empty() {
+            return Err(ttrpc_error(
+                ttrpc::Code::INVALID_ARGUMENT,
+                "container id list is empty",
+            ));
+        }
+
+        let mut paths = std::collections::HashSet::new();
+        {
+            let mut sandbox = self.sandbox.lock().await;
+            for container_id in &req.container_ids {
+                let ctr = sandbox.get_container(container_id).map_ttrpc_err(
+                    ttrpc::Code::INVALID_ARGUMENT,
+                    "invalid container id",
+                )?;
+                let root = PathBuf::from(format!("/proc/{}/root", ctr.init_process_pid));
+                paths.insert(root.clone());
+
+                if let Some(spec) = ctr.config.spec.as_ref() {
+                    if let Some(mounts) = spec.mounts() {
+                        for mount in mounts {
+                            let destination = mount
+                                .destination()
+                                .strip_prefix("/")
+                                .unwrap_or_else(|_| mount.destination());
+                            paths.insert(root.join(destination));
+                        }
+                    }
+                }
+            }
+        }
+
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            for path in paths {
+                let file = File::open(&path)
+                    .with_context(|| format!("open filesystem path {}", path.display()))?;
+                if unsafe { libc::syncfs(file.as_raw_fd()) } != 0 {
+                    return Err(io::Error::last_os_error())
+                        .with_context(|| format!("sync filesystem at {}", path.display()));
+                }
+            }
+            Ok(())
+        })
+        .await
+        .map_ttrpc_err(same)?
+        .map_ttrpc_err(same)?;
+
         Ok(Empty::new())
     }
 

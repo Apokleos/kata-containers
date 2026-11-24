@@ -9,7 +9,9 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use common::error::Error as CommonError;
-use common::types::{CheckpointSandboxRequest, RestoreSandboxRequest, RestoredSandboxTask};
+use common::types::{
+    CheckpointSandboxRequest, RestoreSandboxRequest, RestoredSandboxTask, RestoredTaskMode,
+};
 use hypervisor::device::DeviceType;
 use hypervisor::{
     self, BlockDeviceModern, VmResourceTopology, KATA_BLK_DEV_TYPE, VIRTIO_BLOCK_MMIO,
@@ -508,7 +510,7 @@ impl RestoreBindingValidation<'_> {
             tasks.push(RestoredSandboxTask {
                 checkpoint_key: task.checkpoint_key.clone(),
                 task_id: task.task_id.clone(),
-                rootfs_device_ids,
+                mode: RestoredTaskMode::FullVm { rootfs_device_ids },
             });
         }
 
@@ -618,7 +620,9 @@ fn validate_network_count(count: usize) -> Result<()> {
 }
 
 fn checkpoint_option_supported(key: &str) -> bool {
-    key == IMMUTABLE_ROOTFS_OPTION || key == RUNTIME_ASSET_IDENTITY_OPTION
+    key == IMMUTABLE_ROOTFS_OPTION
+        || key == RUNTIME_ASSET_IDENTITY_OPTION
+        || key == super::cold_rootfs::CHECKPOINT_FIDELITY_OPTION
 }
 
 #[cfg(test)]
@@ -759,6 +763,9 @@ mod tests {
                 .map(|&key| common::types::SandboxRestoreTask {
                     checkpoint_key: key.into(),
                     task_id: format!("new-{key}"),
+                    base_image: None,
+                    reconnect_only_host_directories: Vec::new(),
+                    has_undeclared_mounts: false,
                 })
                 .collect(),
             operation_timeout: None,
@@ -791,8 +798,12 @@ mod tests {
                 .collect::<Vec<_>>(),
             [("b", "new-b"), ("a", "new-a")]
         );
-        assert_eq!(tasks[0].rootfs_device_ids, ["dev-b"]);
-        assert_eq!(tasks[1].rootfs_device_ids, ["dev-a", "lower-a"]);
+        assert!(
+            matches!(&tasks[0].mode, RestoredTaskMode::FullVm { rootfs_device_ids } if rootfs_device_ids.iter().map(String::as_str).collect::<Vec<_>>() == ["dev-b"])
+        );
+        assert!(
+            matches!(&tasks[1].mode, RestoredTaskMode::FullVm { rootfs_device_ids } if rootfs_device_ids.iter().map(String::as_str).collect::<Vec<_>>() == ["dev-a", "lower-a"])
+        );
     }
 
     #[tokio::test]
@@ -908,6 +919,7 @@ mod tests {
             checkpoint_path: request.checkpoint_path.clone(),
             options: request.options.clone(),
             manifest,
+            writable_artifacts: HashMap::new(),
         }
     }
 

@@ -175,6 +175,16 @@ impl VirtualVolume {
 
 #[async_trait]
 impl super::Rootfs for VirtualVolume {
+    fn writable_layer(&self) -> super::WritableLayer {
+        super::WritableLayer::Unknown {
+            reason: "virtual-volume writable backing has not been proven".to_string(),
+        }
+    }
+
+    fn external_device_ids(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     async fn get_guest_rootfs_path(&self) -> Result<String> {
         Ok(self.guest_path.display().to_string().clone())
     }

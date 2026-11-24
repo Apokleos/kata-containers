@@ -150,6 +150,7 @@ impl VirtSandbox {
 
         let manifest = CheckpointManifest {
             format_version: WORKLOAD_CHECKPOINT_FORMAT_VERSION,
+            mode: super::manifest::CheckpointMode::FullState,
             hypervisor: hypervisor_name,
             tasks: req
                 .tasks
@@ -157,9 +158,12 @@ impl VirtSandbox {
                 .map(|task| CheckpointTask {
                     checkpoint_key: task.checkpoint_key.clone(),
                     task_id: task.task_id.clone(),
+                    base_image_sha256: None,
+                    reconnect_only_host_directories: Vec::new(),
                 })
                 .collect(),
             rootfs,
+            overlay_rootfs: Vec::new(),
             network_macs,
             vm_vcpus: resource_topology.vcpus,
             vm_memory_mb: resource_topology.memory_mb,

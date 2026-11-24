@@ -516,6 +516,12 @@ mod tests {
         async fn create_sandbox(&self, _: agent::CreateSandboxRequest) -> Result<agent::Empty> {
             unimplemented!()
         }
+        async fn sync_container_filesystems(
+            &self,
+            _: agent::SyncContainerFilesystemsRequest,
+        ) -> Result<agent::Empty> {
+            unimplemented!()
+        }
         async fn destroy_sandbox(&self, _: agent::Empty) -> Result<agent::Empty> {
             unimplemented!()
         }
@@ -702,6 +708,14 @@ mod tests {
 
     #[async_trait]
     impl Rootfs for FakeResource {
+        fn writable_layer(&self) -> resource::rootfs::WritableLayer {
+            resource::rootfs::WritableLayer::Unknown {
+                reason: "test resource".to_string(),
+            }
+        }
+        fn external_device_ids(&self) -> Vec<String> {
+            Vec::new()
+        }
         async fn get_guest_rootfs_path(&self) -> Result<String> {
             unimplemented!()
         }

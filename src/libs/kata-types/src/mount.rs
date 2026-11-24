@@ -76,6 +76,8 @@ pub const KATA_VIRTUAL_VOLUME_IMAGE_GUEST_PULL: &str = "image_guest_pull";
 pub const KATA_IMAGE_FORCE_GUEST_PULL: &str = "force_guest_pull";
 /// kata default guest sandbox dir.
 pub const DEFAULT_KATA_GUEST_SANDBOX_DIR: &str = "/run/kata-containers/sandbox";
+/// Base directory for per-container runtime state inside the guest.
+pub const DEFAULT_KATA_GUEST_CONTAINER_BASE: &str = "/run/kata-containers";
 /// default shm directory name.
 pub const SHM_DIR: &str = "shm";
 /// shm device path.
@@ -92,6 +94,13 @@ pub fn kata_direct_volume_root_path() -> String {
 /// Get the sandbox bind mounts directory.
 pub fn kata_guest_sandbox_dir() -> String {
     DEFAULT_KATA_GUEST_SANDBOX_DIR.to_string()
+}
+
+/// Return the mount directory used by the implicit multi-layer EROFS writable upper.
+pub fn implicit_erofs_upper_mount_path(container_id: &str) -> PathBuf {
+    PathBuf::from(DEFAULT_KATA_GUEST_CONTAINER_BASE)
+        .join(container_id)
+        .join("multi-layer/upper")
 }
 
 /// Information about a mount.

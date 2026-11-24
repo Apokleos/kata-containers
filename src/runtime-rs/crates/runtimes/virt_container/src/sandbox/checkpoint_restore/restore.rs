@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use std::{
+    collections::HashMap,
     ffi::OsStr,
     fs::{self, DirBuilder},
     os::unix::fs::DirBuilderExt,
@@ -20,13 +21,14 @@ use crate::sandbox::VirtSandbox;
 
 use super::{
     artifacts::{rootfs, vm, RESTORE_ARTIFACT_CONCURRENCY, RESTORE_ARTIFACT_SEMAPHORE},
-    manifest::CheckpointManifest,
+    manifest::{CheckpointManifest, CheckpointMode, WritableLayerArtifactRef},
     validation::{RestoreBindingValidation, RestoreManifestValidation, RuntimeValidation},
     PendingRestore,
 };
 use crate::sandbox::startup::StartMode;
 use hypervisor::{VmResourceTopology, VmRestoreOptions, HYPERVISOR_DRAGONBALL};
 use persist::sandbox_persist::Persist;
+use resource::rootfs::writable_snapshot::PreparedWritableRestore;
 use resource::ResourceConfig;
 use tokio::time::timeout;
 
@@ -214,6 +216,7 @@ impl VirtSandbox {
             return Ok(());
         }
 
+        let artifacts_started = Instant::now();
         let prepare = self
             .restore_state
             .write()
@@ -225,12 +228,95 @@ impl VirtSandbox {
                 )
             })?;
 
+        let manifest = CheckpointManifest::load(&prepare.checkpoint_path)?;
+        if manifest.mode == CheckpointMode::FullState
+            && super::cold_rootfs::checkpoint_is_cold(&prepare.options)?
+        {
+            return Err(CommonError::InvalidSandboxOperation(
+                "restore fidelity does not match full-VM checkpoint".into(),
+            )
+            .into());
+        }
+        if manifest.mode == CheckpointMode::ColdRootfs {
+            if !super::cold_rootfs::checkpoint_is_cold(&prepare.options)?
+                && prepare
+                    .options
+                    .contains_key(super::cold_rootfs::CHECKPOINT_FIDELITY_OPTION)
+            {
+                return Err(CommonError::InvalidSandboxOperation(
+                    "restore fidelity does not match cold checkpoint".into(),
+                )
+                .into());
+            }
+            let runtime_hypervisor = self
+                .resource_manager
+                .config()
+                .await
+                .runtime
+                .hypervisor_name
+                .clone();
+            if manifest.hypervisor != runtime_hypervisor {
+                return Err(CommonError::InvalidSandboxOperation(
+                    "cold checkpoint hypervisor does not match runtime".into(),
+                )
+                .into());
+            }
+            self.verify_runtime_fingerprint(&manifest.runtime_fingerprint, &prepare.options)
+                .await?;
+            let mut writable_artifacts = HashMap::with_capacity(manifest.tasks.len());
+            for task in &manifest.tasks {
+                let prepared = match manifest.writable_artifact(&task.checkpoint_key)? {
+                    WritableLayerArtifactRef::ExternalBlock(artifact) => {
+                        let verified = Self::verify_cold_restore_artifact(
+                            Path::new(&prepare.checkpoint_path).join(&artifact.file),
+                            artifact.logical_size,
+                            None,
+                        )
+                        .await?;
+                        PreparedWritableRestore::ExternalBlock {
+                            artifact: verified,
+                            required_capacity: artifact.logical_size,
+                            fs_type: "ext4".to_owned(),
+                        }
+                    }
+                    WritableLayerArtifactRef::HostOverlay(artifact) => {
+                        let verified = Self::verify_cold_restore_artifact(
+                            Path::new(&prepare.checkpoint_path).join(&artifact.file),
+                            artifact.size,
+                            None,
+                        )
+                        .await?;
+                        PreparedWritableRestore::OverlayUpper { artifact: verified }
+                    }
+                };
+                if writable_artifacts
+                    .insert(task.checkpoint_key.clone(), prepared)
+                    .is_some()
+                {
+                    return Err(CommonError::InvalidSandboxOperation(
+                        "duplicate cold rootfs checkpoint task".into(),
+                    )
+                    .into());
+                }
+            }
+            self.restore_state
+                .write()
+                .await
+                .set_pending(PendingRestore {
+                    boot: None,
+                    checkpoint_path: prepare.checkpoint_path,
+                    options: prepare.options,
+                    manifest,
+                    writable_artifacts,
+                });
+            return Ok(());
+        }
+
         RuntimeValidation {
             resources: self.resource_manager.as_ref(),
         }
         .validate()
         .await?;
-        let manifest = CheckpointManifest::load(&prepare.checkpoint_path)?;
         RestoreManifestValidation {
             manifest: &manifest,
             resources: self.resource_manager.as_ref(),
@@ -296,6 +382,10 @@ impl VirtSandbox {
 
         let (mut blocks, state_dir) = artifacts?;
         blocks.sort_by_key(|block| block.config.index);
+        info!(sl!(), "Kata restore artifact preparation completed";
+            "sandbox_id" => self.sid.as_str(),
+            "elapsed_us" => artifacts_started.elapsed().as_micros(),
+        );
 
         let options = hypervisor::VmRestoreOptions {
             state_path: state_dir,
@@ -313,6 +403,7 @@ impl VirtSandbox {
                 checkpoint_path: prepare.checkpoint_path,
                 options: prepare.options,
                 manifest,
+                writable_artifacts: HashMap::new(),
             });
         }
 
@@ -320,7 +411,7 @@ impl VirtSandbox {
     }
 
     async fn rebind_restore(&self, req: &RestoreSandboxRequest) -> Result<RestoreSandboxInfo> {
-        let pending = self
+        let mut pending = self
             .restore_state
             .write()
             .await
@@ -330,6 +421,21 @@ impl VirtSandbox {
                     "sandbox restore state is unavailable".to_string(),
                 )
             })?;
+
+        if pending.manifest.mode == CheckpointMode::ColdRootfs {
+            if pending.checkpoint_path != req.checkpoint_path || pending.options != req.options {
+                return Err(CommonError::InvalidSandboxOperation(
+                    "restore request does not match prepared checkpoint".into(),
+                )
+                .into());
+            }
+            let tasks = super::cold_rootfs::cold_restore_tasks(
+                req,
+                &pending.manifest,
+                &mut pending.writable_artifacts,
+            )?;
+            return Ok(RestoreSandboxInfo { tasks });
+        }
 
         let (mappings, tasks) = RestoreBindingValidation {
             request: req,

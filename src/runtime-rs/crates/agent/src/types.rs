@@ -34,6 +34,11 @@ pub struct RebindSandboxRequest {
     pub dns: Vec<String>,
 }
 
+#[derive(PartialEq, Clone, Default)]
+pub struct SyncContainerFilesystemsRequest {
+    pub container_ids: Vec<String>,
+}
+
 #[derive(Default, Debug, Clone, PartialEq)]
 pub enum FSGroupChangePolicy {
     #[default]

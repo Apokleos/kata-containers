@@ -31,8 +31,10 @@ pub trait SandboxCheckpointRestore: Send + Sync {
 /// Optional task operations needed to checkpoint and restore an entire sandbox.
 #[async_trait]
 pub trait ContainerCheckpointRestore: Send + Sync {
+    async fn ensure_restore_tasks_consumed(&self) -> Result<()>;
     async fn prepare_checkpoint_tasks(&self, tasks: &mut [SandboxCheckpointTask]) -> Result<()>;
     async fn pause_checkpoint_tasks(&self, tasks: &[SandboxCheckpointTask]) -> Result<()>;
+    async fn sync_checkpoint_filesystems(&self, tasks: &[SandboxCheckpointTask]) -> Result<()>;
     async fn resume_checkpoint_tasks(&self, tasks: &[SandboxCheckpointTask]) -> Result<()>;
     async fn restore_tasks(
         &self,

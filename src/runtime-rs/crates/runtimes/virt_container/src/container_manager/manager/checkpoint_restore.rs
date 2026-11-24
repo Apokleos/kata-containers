@@ -3,26 +3,152 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use super::*;
-use resource::rootfs::Rootfs;
-use std::collections::{HashMap, HashSet};
-
-use common::{
-    types::{RestoredSandboxTask, SandboxCheckpointTask, SandboxRestoreTask},
-    ContainerCheckpointRestore,
+use resource::rootfs::{
+    writable_snapshot::{apply_prepared_restore, resolve_restore_target, PreparedWritableRestore},
+    Rootfs,
+};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
 };
 
-pub(super) struct PendingRestoredTask {
-    checkpoint_key: String,
-    rootfs: Arc<dyn Rootfs>,
-    binding: bool,
+use common::{
+    types::{RestoredSandboxTask, RestoredTaskMode, SandboxCheckpointTask, SandboxRestoreTask},
+    ContainerCheckpointRestore,
+};
+use resource::rootfs::WritableLayer;
+
+pub(super) enum PendingRestoredTask {
+    FullVm {
+        checkpoint_key: String,
+        rootfs: Arc<dyn Rootfs>,
+        binding: bool,
+    },
+    ColdRootfs {
+        state: ColdRestoreState,
+    },
+}
+
+pub(super) enum ColdRestoreState {
+    Ready {
+        prepared: PreparedWritableRestore,
+        reconnect_only_host_directories: Vec<ReconnectOnlyHostDirectory>,
+    },
+    Applying,
+    Failed(String),
+}
+
+impl ColdRestoreState {
+    fn claim(&mut self, container_id: &str) -> Result<()> {
+        match self {
+            Self::Ready { .. } => {
+                *self = Self::Applying;
+                Ok(())
+            }
+            Self::Applying => Err(anyhow!(
+                "writable-rootfs restore task {container_id} is already applying"
+            )),
+            Self::Failed(reason) => Err(anyhow!(
+                "writable-rootfs restore task {container_id} failed: {reason}"
+            )),
+        }
+    }
+
+    pub(super) fn fail(&mut self, reason: String) {
+        if matches!(self, Self::Applying) {
+            *self = Self::Failed(reason);
+        }
+    }
+}
+
+fn normalized_mount_options(options: Option<&Vec<String>>) -> Result<Vec<String>> {
+    let mut normalized = options.cloned().unwrap_or_default();
+    normalized.sort();
+    if normalized.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(anyhow!("OCI mount has duplicate mount options"));
+    }
+    Ok(normalized)
+}
+
+fn mount_options_for_destination(spec: &oci::Spec, destination: &str) -> Result<Vec<String>> {
+    let destination = Path::new(destination);
+    let mounts = spec
+        .mounts()
+        .as_ref()
+        .map(|mounts| {
+            mounts
+                .iter()
+                .filter(|mount| mount.destination() == destination)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if mounts.len() != 1 {
+        return Err(anyhow!(
+            "expected exactly one OCI mount for reconnect-only destination {}, found {}",
+            destination.display(),
+            mounts.len()
+        ));
+    }
+    normalized_mount_options(mounts[0].options().as_ref())
+}
+
+pub(super) fn record_reconnect_only_host_directory_mount_options(
+    directories: &mut [ReconnectOnlyHostDirectory],
+    spec: &oci::Spec,
+) -> Result<()> {
+    for directory in directories {
+        directory.mount_options = mount_options_for_destination(spec, &directory.destination)?;
+    }
+    Ok(())
+}
+
+pub(super) fn validate_reconnect_only_host_directory_mount_options(
+    directories: &[ReconnectOnlyHostDirectory],
+    spec: &oci::Spec,
+) -> Result<()> {
+    for directory in directories {
+        let observed = mount_options_for_destination(spec, &directory.destination)?;
+        if directory.mount_options != observed {
+            return Err(anyhow!(
+                "OCI mount options for reconnect-only destination {} do not match checkpoint",
+                directory.destination
+            ));
+        }
+    }
+    Ok(())
 }
 
 impl VirtContainerManager {
-    pub(super) async fn is_pending_restore(&self, container_id: &str) -> bool {
-        self.pending_restored_tasks
-            .read()
-            .await
-            .contains_key(container_id)
+    pub(super) async fn apply_cold_restore_before_create(
+        &self,
+        config: &mut ContainerConfig,
+        spec: &oci::Spec,
+        prepared: &PreparedWritableRestore,
+        directories: &[ReconnectOnlyHostDirectory],
+    ) -> Result<()> {
+        validate_reconnect_only_host_directory_mount_options(directories, spec)?;
+        let target = resolve_restore_target(&config.rootfs_mounts, prepared)?;
+        let container_id = &config.container_id;
+        if self.containers.read().await.contains_key(container_id) {
+            return Err(anyhow!("container {container_id} already exists"));
+        }
+
+        {
+            let mut pending = self.pending_restored_tasks.write().await;
+            let task = pending
+                .get_mut(container_id)
+                .ok_or_else(|| anyhow!("writable-rootfs restore task disappeared before claim"))?;
+            match task {
+                PendingRestoredTask::ColdRootfs { state } => state.claim(container_id)?,
+                PendingRestoredTask::FullVm { .. } => {
+                    return Err(anyhow!(
+                        "writable-rootfs restore task {container_id} changed mode"
+                    ))
+                }
+            }
+        }
+
+        apply_prepared_restore(&mut config.rootfs_mounts, prepared, &target)
     }
 
     pub(super) async fn bind_restored_container(
@@ -40,15 +166,24 @@ impl VirtContainerManager {
             let slot = pending.get_mut(&container_id).ok_or_else(|| {
                 anyhow!("VM-restored task {container_id} has no pending restore record")
             })?;
-
-            if slot.binding {
-                return Err(anyhow!(
-                    "VM-restored task {container_id} is already being bound"
-                ));
+            match slot {
+                PendingRestoredTask::FullVm {
+                    checkpoint_key,
+                    rootfs,
+                    binding,
+                } => {
+                    if *binding {
+                        return Err(anyhow!(
+                            "VM-restored task {container_id} is already being bound"
+                        ));
+                    }
+                    *binding = true;
+                    (Arc::clone(rootfs), checkpoint_key.clone())
+                }
+                PendingRestoredTask::ColdRootfs { .. } => {
+                    return Err(anyhow!("task {container_id} is a cold restore"));
+                }
             }
-
-            slot.binding = true;
-            (Arc::clone(&slot.rootfs), slot.checkpoint_key.clone())
         };
 
         let bind_result = async {
@@ -80,16 +215,14 @@ impl VirtContainerManager {
             if containers.contains_key(&container_id) {
                 return Err(anyhow!("container {container_id} already exists"));
             }
-
-            let slot = pending.get(&container_id).ok_or_else(|| {
-                anyhow!("pending VM-restored task {container_id} disappeared during bind")
-            })?;
-            if !slot.binding {
+            if !matches!(
+                pending.get(&container_id),
+                Some(PendingRestoredTask::FullVm { binding: true, .. })
+            ) {
                 return Err(anyhow!(
                     "pending VM-restored task {container_id} left binding state"
                 ));
             }
-
             // Finish fallible construction/validation before adopting resources.
             // After adoption, publication below has no await or fallible operation.
             self.resource_manager
@@ -107,13 +240,13 @@ impl VirtContainerManager {
         .await;
 
         if bind_result.is_err() {
-            if let Some(slot) = self
+            if let Some(PendingRestoredTask::FullVm { binding, .. }) = self
                 .pending_restored_tasks
                 .write()
                 .await
                 .get_mut(&container_id)
             {
-                slot.binding = false;
+                *binding = false;
             }
         }
 
@@ -123,6 +256,18 @@ impl VirtContainerManager {
 
 #[async_trait]
 impl ContainerCheckpointRestore for VirtContainerManager {
+    async fn ensure_restore_tasks_consumed(&self) -> Result<()> {
+        let pending = self.pending_restored_tasks.read().await;
+        if pending.is_empty() {
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "restore has {} unconsumed task record(s)",
+                pending.len()
+            ))
+        }
+    }
+
     async fn prepare_checkpoint_tasks(&self, tasks: &mut [SandboxCheckpointTask]) -> Result<()> {
         if tasks.is_empty() {
             return Err(anyhow!("checkpoint task inventory is empty"));
@@ -163,10 +308,17 @@ impl ContainerCheckpointRestore for VirtContainerManager {
                 ));
             }
 
-            task.rootfs_device_ids = container
-                .checkpoint_rootfs_ids()
+            let (rootfs_device_ids, rootfs_external_device_ids, writable_layer) = container
+                .checkpoint_rootfs_info()
                 .await
                 .context(format!("inspect checkpoint task {} rootfs", task.task_id))?;
+            task.rootfs_device_ids = rootfs_device_ids;
+            task.rootfs_external_device_ids = rootfs_external_device_ids;
+            task.writable_layer = Some(writable_layer);
+            record_reconnect_only_host_directory_mount_options(
+                &mut task.reconnect_only_host_directories,
+                &container.spec().await,
+            )?;
         }
 
         Ok(())
@@ -205,6 +357,30 @@ impl ContainerCheckpointRestore for VirtContainerManager {
             paused.push(task.task_id.clone());
         }
 
+        Ok(())
+    }
+
+    async fn sync_checkpoint_filesystems(&self, tasks: &[SandboxCheckpointTask]) -> Result<()> {
+        // A host OverlayFS upper is synchronized by the host immediately before
+        // it is archived.  The guest RPC remains required for guest-managed
+        // writable filesystems such as external block rootfs devices.
+        let container_ids = tasks
+            .iter()
+            .filter(|task| {
+                !matches!(
+                    task.writable_layer.as_ref(),
+                    Some(WritableLayer::HostDirectory { .. })
+                )
+            })
+            .map(|task| task.task_id.clone())
+            .collect::<Vec<_>>();
+        if container_ids.is_empty() {
+            return Ok(());
+        }
+        self.agent
+            .sync_container_filesystems(agent::SyncContainerFilesystemsRequest { container_ids })
+            .await
+            .context("sync checkpoint task filesystems")?;
         Ok(())
     }
 
@@ -263,10 +439,7 @@ impl ContainerCheckpointRestore for VirtContainerManager {
                     )
                 })?;
 
-            if restored_task.task_id != task.task_id
-                || restored_task.rootfs_device_ids.is_empty()
-                || restored_task.rootfs_device_ids.iter().any(String::is_empty)
-            {
+            if restored_task.task_id != task.task_id {
                 return Err(anyhow!(
                     "restored task {} has invalid identity or rootfs device",
                     task.task_id
@@ -277,29 +450,47 @@ impl ContainerCheckpointRestore for VirtContainerManager {
                 return Err(anyhow!("duplicate restored task ID {}", task.task_id));
             }
 
-            for device_id in &restored_task.rootfs_device_ids {
-                if !rootfs_ids.insert(device_id.as_str()) {
-                    return Err(anyhow!(
-                        "restored rootfs device {} is assigned to multiple tasks",
-                        device_id
-                    ));
+            let pending_task = match &restored_task.mode {
+                RestoredTaskMode::FullVm { rootfs_device_ids } => {
+                    if rootfs_device_ids.is_empty()
+                        || rootfs_device_ids.iter().any(String::is_empty)
+                    {
+                        return Err(anyhow!(
+                            "restored task {} has invalid rootfs device",
+                            task.task_id
+                        ));
+                    }
+                    for device_id in rootfs_device_ids {
+                        if !rootfs_ids.insert(device_id.as_str()) {
+                            return Err(anyhow!(
+                                "restored rootfs device {} is assigned to multiple tasks",
+                                device_id
+                            ));
+                        }
+                    }
+                    let rootfs = self
+                        .resource_manager
+                        .adopt_restored_rootfs(rootfs_device_ids)
+                        .await
+                        .context(format!("adopt restored rootfs for task {}", task.task_id))?;
+                    PendingRestoredTask::FullVm {
+                        checkpoint_key: task.checkpoint_key.clone(),
+                        rootfs,
+                        binding: false,
+                    }
                 }
-            }
-
-            let restored_rootfs = self
-                .resource_manager
-                .adopt_restored_rootfs(&restored_task.rootfs_device_ids)
-                .await
-                .context(format!("adopt restored rootfs for task {}", task.task_id))?;
-
-            pending_tasks.push((
-                task.task_id.clone(),
-                PendingRestoredTask {
-                    checkpoint_key: task.checkpoint_key.clone(),
-                    rootfs: restored_rootfs,
-                    binding: false,
+                RestoredTaskMode::ColdWritableRootfs {
+                    prepared,
+                    reconnect_only_host_directories,
+                } => PendingRestoredTask::ColdRootfs {
+                    state: ColdRestoreState::Ready {
+                        prepared: prepared.clone(),
+                        reconnect_only_host_directories: reconnect_only_host_directories.clone(),
+                    },
                 },
-            ));
+            };
+
+            pending_tasks.push((task.task_id.clone(), pending_task));
         }
 
         let containers = self.containers.read().await;
@@ -317,5 +508,45 @@ impl ContainerCheckpointRestore for VirtContainerManager {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use resource::rootfs::writable_snapshot::{VerifiedArtifact, VerifiedArtifactIdentity};
+
+    fn ready_cold_state() -> ColdRestoreState {
+        ColdRestoreState::Ready {
+            prepared: PreparedWritableRestore::OverlayUpper {
+                artifact: VerifiedArtifact {
+                    path: "/unused-test-artifact".into(),
+                    file: Arc::new(tempfile::tempfile().unwrap()),
+                    size: 0,
+                    identity: VerifiedArtifactIdentity {
+                        device: 0,
+                        inode: 0,
+                        ctime_seconds: 0,
+                        ctime_nanoseconds: 0,
+                    },
+                    deadline: None,
+                },
+            },
+            reconnect_only_host_directories: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn cold_restore_claim_is_single_use_and_failure_is_terminal() {
+        let state = Arc::new(tokio::sync::Mutex::new(ready_cold_state()));
+        let first = async { state.lock().await.claim("task").is_ok() };
+        let second = async { state.lock().await.claim("task").is_ok() };
+        let (first, second) = tokio::join!(first, second);
+        assert_ne!(first, second);
+
+        let mut state = state.lock().await;
+        state.fail("copy failed".to_string());
+        assert!(matches!(&*state, ColdRestoreState::Failed(reason) if reason == "copy failed"));
+        assert!(state.claim("task").is_err());
     }
 }

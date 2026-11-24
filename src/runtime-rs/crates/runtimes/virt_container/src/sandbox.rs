@@ -1532,10 +1532,16 @@ impl Sandbox for VirtSandbox {
         }
 
         let mode = self.resolve_start_mode().await;
-        let result: Result<()> = async {
+        let result: Result<StartMode> = async {
             self.prepare_restore_artifacts(mode)
                 .await
                 .context("prepare sandbox restore before VM start")?;
+
+            let mode = if self.restore_state.read().await.is_cold_rootfs() {
+                StartMode::ColdRestore
+            } else {
+                mode
+            };
 
             let started = self
                 .prepare_and_start_vm(&mut inner, sandbox_config, mode)
@@ -1551,25 +1557,27 @@ impl Sandbox for VirtSandbox {
 
             self.save().await.context("save state")?;
 
-            Ok(())
+            Ok(mode)
         }
         .await;
 
-        if let Err(start_error) = result {
-            inner.start_failed = true;
-            drop(inner);
-            if let Err(stop_error) = self.stop().await {
-                return Err(start_error).context(format!(
-                    "failed to stop sandbox after start failure: {stop_error:#}"
-                ));
+        let mode = match result {
+            Ok(mode) => mode,
+            Err(start_error) => {
+                inner.start_failed = true;
+                drop(inner);
+                if let Err(stop_error) = self.stop().await {
+                    return Err(start_error).context(format!(
+                        "failed to stop sandbox after start failure: {stop_error:#}"
+                    ));
+                }
+                return Err(start_error);
             }
-            return Err(start_error);
-        }
-
+        };
         inner.state = SandboxState::Running;
         inner.created_at = Some(SystemTime::now());
 
-        if matches!(mode, StartMode::Normal) {
+        if matches!(mode, StartMode::Normal | StartMode::ColdRestore) {
             self.start_health_monitor();
         }
 

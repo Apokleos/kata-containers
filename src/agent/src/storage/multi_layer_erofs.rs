@@ -34,7 +34,7 @@ use kata_sys_util::mount::{create_mount_destination, Mounter};
 use kata_types::device::{DRIVER_BLK_MMIO_TYPE, DRIVER_BLK_PCI_TYPE, DRIVER_SCSI_TYPE};
 #[cfg(feature = "devicemapper")]
 use kata_types::dmverity::{cleanup_dmverity_devices, create_dmverity_device, DmVerityInfo};
-use kata_types::mount::StorageDevice;
+use kata_types::mount::{implicit_erofs_upper_mount_path, StorageDevice};
 use protocols::agent::Storage;
 use safe_path::scoped_join;
 use slog::Logger;
@@ -54,6 +54,7 @@ pub const DRIVER_MULTI_LAYER_EROFS: &str = "erofs.multi-layer";
 const OPT_OVERLAY_UPPER: &str = "X-kata.overlay-upper";
 const OPT_OVERLAY_LOWER: &str = "X-kata.overlay-lower";
 const OPT_MULTI_LAYER: &str = "X-kata.multi-layer=true";
+const OPT_WRITABLE_ROOTFS_RESTORE: &str = "X-kata.writable-rootfs-restore=true";
 const OPT_GPT_PARTITIONED: &str = "X-kata.gpt-partitioned=true";
 const OPT_MKDIR_PATH: &str = "X-kata.mkdir.path=";
 const OPT_PARTITION_NUMBER: &str = "X-kata.partition-number=";
@@ -94,6 +95,17 @@ pub struct MultiLayerErofsResult {
     pub temp_mount_points: Vec<String>,
     /// dm-verity device paths that need to be destroyed during cleanup
     pub verity_devices: Vec<String>,
+}
+
+fn prepare_overlay_dirs(upperdir: &Path, workdir: &Path, restore: bool) -> Result<()> {
+    if !upperdir.exists() {
+        fs::create_dir_all(upperdir).context("failed to create upperdir")?;
+    }
+    if restore && workdir.exists() {
+        fs::remove_dir_all(workdir).context("failed to reset restored overlay workdir")?;
+    }
+    fs::create_dir_all(workdir).context("failed to create workdir")?;
+    Ok(())
 }
 
 #[derive(Debug)]
@@ -203,6 +215,15 @@ pub async fn handle_multi_layer_erofs_group(
         ));
     }
 
+    let restore_writable_rootfs = upper_storage
+        .map(|storage| {
+            storage
+                .options
+                .iter()
+                .any(|option| option == OPT_WRITABLE_ROOTFS_RESTORE)
+        })
+        .unwrap_or(false);
+
     // Only sort erofs layers by partition number in GPT mode.
     // In GPT mode, each storage carries X-kata.partition-number=N and layers
     // must be ordered by partition number so that the overlay lowerdir
@@ -259,8 +280,7 @@ pub async fn handle_multi_layer_erofs_group(
         let container_base = scoped_join(CONTAINER_BASE, cid_str)
             .context("failed to build container temporary path")?;
         fs::create_dir_all(&container_base).context("failed to create container temporary path")?;
-        scoped_join(&container_base, "multi-layer/upper")
-            .context("failed to build implicit upper path")?
+        implicit_erofs_upper_mount_path(cid_str)
     };
     fs::create_dir_all(&upper_mount).context("failed to create upper mount dir")?;
 
@@ -436,10 +456,7 @@ pub async fn handle_multi_layer_erofs_group(
     let upperdir = upper_mount.join("upper");
     let workdir = upper_mount.join("work");
 
-    if !upperdir.exists() {
-        fs::create_dir_all(&upperdir).context("failed to create upperdir")?;
-    }
-    fs::create_dir_all(&workdir).context("failed to create workdir")?;
+    prepare_overlay_dirs(&upperdir, &workdir, restore_writable_rootfs)?;
 
     let lowerdir = lower_mounts
         .iter()
@@ -1287,5 +1304,22 @@ mod tests {
         assert_eq!(info.blocksize, 4096);
         assert_eq!(info.salt.as_deref(), Some("0000000000000000"));
         assert!(!info.no_superblock);
+    }
+
+    #[test]
+    fn restored_overlay_preserves_upper_and_recreates_work() {
+        let temp = tempfile::tempdir().unwrap();
+        let upperdir = temp.path().join("upper");
+        let workdir = temp.path().join("work");
+        fs::create_dir_all(&upperdir).unwrap();
+        fs::create_dir_all(&workdir).unwrap();
+        fs::write(upperdir.join("data"), b"preserve").unwrap();
+        fs::write(workdir.join("stale"), b"discard").unwrap();
+
+        prepare_overlay_dirs(&upperdir, &workdir, true).unwrap();
+
+        assert_eq!(fs::read(upperdir.join("data")).unwrap(), b"preserve");
+        assert!(workdir.is_dir());
+        assert!(!workdir.join("stale").exists());
     }
 }

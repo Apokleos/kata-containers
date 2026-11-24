@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 use std::{
     sync::{atomic::Ordering, Arc},
-    time::SystemTime,
+    time::{Instant, SystemTime},
 };
 
 use agent::types::KernelModule;
@@ -27,6 +27,7 @@ use super::{SandboxInner, VirtSandbox};
 pub(super) enum StartMode {
     Normal,
     Restore,
+    ColdRestore,
 }
 
 pub(super) struct StartedVm {
@@ -97,6 +98,7 @@ impl VirtSandbox {
 
         // start vm
         inner.vmm_start_attempted = true;
+        let restore_started = restore.as_ref().map(|_| Instant::now());
         let started = self
             .hypervisor
             .start_vm(hypervisor::VmStartOptions {
@@ -105,6 +107,14 @@ impl VirtSandbox {
             })
             .await
             .context("start vm");
+
+        if let Some(started_at) = restore_started {
+            info!(sl!(), "Kata restore VMM start completed";
+                "sandbox_id" => id.as_str(),
+                "elapsed_us" => started_at.elapsed().as_micros(),
+                "success" => started.is_ok(),
+            );
+        }
 
         // A failed start can still have spawned a VMM.  Record its identity
         // before propagating the error so sandbox teardown can confirm exit.
@@ -215,7 +225,14 @@ impl VirtSandbox {
             .context("get agent socket")?;
 
         if matches!(mode, StartMode::Restore) {
-            self.connect_restored_agent(&address).await?;
+            let reconnect_started = Instant::now();
+            let connected = self.connect_restored_agent(&address).await;
+            info!(sl!(), "Kata restore Agent reconnect completed";
+                "sandbox_id" => id.as_str(),
+                "elapsed_us" => reconnect_started.elapsed().as_micros(),
+                "success" => connected.is_ok(),
+            );
+            connected?;
         } else {
             self.agent
                 .start(&address)
@@ -224,7 +241,9 @@ impl VirtSandbox {
         }
 
         let hypervisor_config = self.hypervisor.hypervisor_config().await;
-        if hypervisor_config.vm_template.boot_from_template || matches!(mode, StartMode::Restore) {
+        if hypervisor_config.vm_template.boot_from_template
+            || matches!(mode, StartMode::Restore | StartMode::ColdRestore)
+        {
             if hypervisor_config.vm_template.boot_from_template
                 && hypervisor_config.security_info.confidential_guest
             {
@@ -248,7 +267,7 @@ impl VirtSandbox {
             .await
             .context("setup device after start vm")?;
 
-        if matches!(mode, StartMode::Normal) {
+        if matches!(mode, StartMode::Normal | StartMode::ColdRestore) {
             // create sandbox in vm
             let agent_config = self.agent.agent_config().await;
             let kernel_modules = KernelModule::set_kernel_modules(agent_config.kernel_modules)?;

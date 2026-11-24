@@ -37,6 +37,7 @@ service AgentService {
 	rpc StatsContainer(StatsContainerRequest) returns (StatsContainerResponse);
 	rpc PauseContainer(PauseContainerRequest) returns (google.protobuf.Empty);
 	rpc ResumeContainer(ResumeContainerRequest) returns (google.protobuf.Empty);
+	rpc SyncContainerFilesystems(SyncContainerFilesystemsRequest) returns (google.protobuf.Empty);
 	rpc RemoveStaleVirtiofsShareMounts(RemoveStaleVirtiofsShareMountsRequest) returns (google.protobuf.Empty);
 	rpc GetDiagnosticData(GetDiagnosticDataRequest) returns (GetDiagnosticDataResponse);
 
@@ -183,6 +184,10 @@ message PauseContainerRequest {
 
 message ResumeContainerRequest {
     string container_id = 1;
+}
+
+message SyncContainerFilesystemsRequest {
+	repeated string container_ids = 1;
 }
 
 message CpuUsage {

@@ -6,7 +6,9 @@
 
 mod checkpoint_restore;
 
-use checkpoint_restore::PendingRestoredTask;
+#[cfg(test)]
+use checkpoint_restore::validate_reconnect_only_host_directory_mount_options;
+use checkpoint_restore::{ColdRestoreState, PendingRestoredTask};
 
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -18,8 +20,9 @@ use common::{
     error::Error,
     types::{
         ContainerConfig, ContainerID, ContainerProcess, ExecProcessRequest, KillRequest,
-        ProcessExitStatus, ProcessStateInfo, ProcessStatus, ProcessType, ResizePTYRequest,
-        ShutdownRequest, StatsInfo, UpdateRequest, PID,
+        ProcessExitStatus, ProcessStateInfo, ProcessStatus, ProcessType,
+        ReconnectOnlyHostDirectory, ResizePTYRequest, ShutdownRequest, StatsInfo, UpdateRequest,
+        PID,
     },
     ContainerManager,
 };
@@ -107,83 +110,182 @@ impl VirtContainerManager {
 #[async_trait]
 impl ContainerManager for VirtContainerManager {
     #[instrument]
-    async fn create_container(&self, config: ContainerConfig, mut spec: oci::Spec) -> Result<PID> {
+    async fn create_container(
+        &self,
+        mut config: ContainerConfig,
+        mut spec: oci::Spec,
+    ) -> Result<PID> {
         // RestoreSandbox records the exact new task IDs. Bind an ordinary
         // Task.Create only when its ID is in that pending restore inventory.
-        if self.is_pending_restore(&config.container_id).await {
+        let (pending_cold, pending_writable, pending_host_directories, has_pending_restore) = {
+            let pending = self.pending_restored_tasks.read().await;
+            let has_pending_restore = !pending.is_empty();
+            match pending.get(&config.container_id) {
+                Some(PendingRestoredTask::FullVm { .. }) => {
+                    (Some(false), None, Vec::new(), has_pending_restore)
+                }
+                Some(PendingRestoredTask::ColdRootfs {
+                    state:
+                        ColdRestoreState::Ready {
+                            prepared,
+                            reconnect_only_host_directories,
+                        },
+                }) => (
+                    Some(true),
+                    Some(prepared.clone()),
+                    reconnect_only_host_directories.clone(),
+                    has_pending_restore,
+                ),
+                Some(PendingRestoredTask::ColdRootfs {
+                    state: ColdRestoreState::Applying,
+                }) => {
+                    return Err(anyhow!(
+                        "writable-rootfs restore task {} is already applying",
+                        config.container_id
+                    ));
+                }
+                Some(PendingRestoredTask::ColdRootfs {
+                    state: ColdRestoreState::Failed(reason),
+                }) => {
+                    return Err(anyhow!(
+                        "writable-rootfs restore task {} failed: {reason}",
+                        config.container_id
+                    ));
+                }
+                None => (None, None, Vec::new(), has_pending_restore),
+            }
+        };
+        if pending_cold == Some(false) {
             return self.bind_restored_container(config, spec).await;
         }
-
-        if self
-            .containers
-            .read()
-            .await
-            .contains_key(&config.container_id)
+        if pending_cold.is_none() && has_pending_restore {
+            return Err(anyhow!(
+                "container {} is not in the pending restore inventory",
+                config.container_id
+            ));
+        }
+        if pending_cold != Some(true)
+            && self
+                .containers
+                .read()
+                .await
+                .contains_key(&config.container_id)
         {
             return Err(anyhow!("container {} already exists", config.container_id));
         }
 
-        let vmm_master_tid = self.get_vmm_master_tid().await?;
-
-        let mut container = Container::new(
-            vmm_master_tid,
-            config.clone(),
-            spec.clone(),
-            self.agent.clone(),
-            self.resource_manager.clone(),
-            self.use_guest_resolv_conf,
-            self.hypervisor.get_passfd_listener_addr().await.ok(),
-        )
-        .await
-        .context("new container")?;
-
-        // CreateContainer Hooks:
-        // * should be run in vmm namespace (hook path in runtime namespace)
-        // * should be run after the vm is started, before container is created, and after CreateRuntime Hooks
-        // * spec details: https://github.com/opencontainers/runtime-spec/blob/c1662686cff159595277b79322d0272f5182941b/config.md#createcontainer-hooks
-        let vmm_ns_path = self.hypervisor.get_ns_path().await?;
-        let vmm_netns_path = format!("{}/{}", vmm_ns_path, "net");
-        let state = spec::State {
-            version: spec.version().clone(),
-            id: config.container_id.clone(),
-            status: spec::ContainerState::Creating,
-            pid: vmm_master_tid as i32,
-            bundle: config.bundle.clone(),
-            annotations: spec.annotations().clone().unwrap_or_default(),
-        };
-
-        // new scope, CreateContainer hooks in which will execute in a new network namespace
-        {
-            let _netns_guard = NetnsGuard::new(&vmm_netns_path).context("vmm netns guard")?;
-            if let Some(hooks) = spec.hooks().as_ref() {
-                let mut create_container_hook_states = HookStates::new();
-                create_container_hook_states
-                    .execute_hooks(from_hooks(hooks.create_container()), Some(state))?;
+        let result: Result<PID> = async {
+            if let Some(backing) = pending_writable.as_ref() {
+                self.apply_cold_restore_before_create(
+                    &mut config,
+                    &spec,
+                    backing,
+                    &pending_host_directories,
+                )
+                .await?;
             }
-        }
+            let vmm_master_tid = self.get_vmm_master_tid().await?;
 
-        let mut containers = self.containers.write().await;
-        self.oom_notifier
-            .track(&config.container_id, &config.bundle, &spec)
+            let mut container = Container::new(
+                vmm_master_tid,
+                config.clone(),
+                spec.clone(),
+                self.agent.clone(),
+                self.resource_manager.clone(),
+                self.use_guest_resolv_conf,
+                self.hypervisor.get_passfd_listener_addr().await.ok(),
+            )
+            .await
+            .context("new container")?;
+
+            // CreateContainer Hooks:
+            // * should be run in vmm namespace (hook path in runtime namespace)
+            // * should be run after the vm is started, before container is created, and after CreateRuntime Hooks
+            // * spec details: https://github.com/opencontainers/runtime-spec/blob/c1662686cff159595277b79322d0272f5182941b/config.md#createcontainer-hooks
+            let hook_result: Result<()> = async {
+                let vmm_ns_path = self.hypervisor.get_ns_path().await?;
+                let vmm_netns_path = format!("{}/{}", vmm_ns_path, "net");
+                let state = spec::State {
+                    version: spec.version().clone(),
+                    id: config.container_id.clone(),
+                    status: spec::ContainerState::Creating,
+                    pid: vmm_master_tid as i32,
+                    bundle: config.bundle.clone(),
+                    annotations: spec.annotations().clone().unwrap_or_default(),
+                };
+                let _netns_guard = NetnsGuard::new(&vmm_netns_path).context("vmm netns guard")?;
+                if let Some(hooks) = spec.hooks().as_ref() {
+                    let mut create_container_hook_states = HookStates::new();
+                    create_container_hook_states
+                        .execute_hooks(from_hooks(hooks.create_container()), Some(state))?;
+                }
+                Ok(())
+            }
             .await;
-        let envd_request = self
-            .sandbox_annotations
-            .get(KATA_ANNO_CFG_RUNTIME_ENVD)
-            .map(String::as_str);
-        crate::envd::inject_if_enabled(&mut spec, envd_request);
-        if let Err(e) = container.create(spec).await {
-            if let Err(inner_e) = container.cleanup().await {
-                warn!(sl!(), "failed to cleanup container {:?}", inner_e);
+            if let Err(error) = hook_result {
+                if let Err(cleanup_error) = container.cleanup().await {
+                    warn!(
+                        sl!(),
+                        "failed to cleanup container after create hook: {:?}", cleanup_error
+                    );
+                }
+                return Err(error);
             }
-            self.oom_notifier.forget(&config.container_id).await;
 
-            return Err(e);
+            self.oom_notifier
+                .track(&config.container_id, &config.bundle, &spec)
+                .await;
+
+            let envd_request = self
+                .sandbox_annotations
+                .get(KATA_ANNO_CFG_RUNTIME_ENVD)
+                .map(String::as_str);
+            crate::envd::inject_if_enabled(&mut spec, envd_request);
+
+            let mut containers = self.containers.write().await;
+            let create_result = container.create(spec).await;
+            if let Err(e) = create_result {
+                if let Err(inner_e) = container.cleanup().await {
+                    warn!(sl!(), "failed to cleanup container {:?}", inner_e);
+                }
+                self.oom_notifier.forget(&config.container_id).await;
+
+                return Err(e);
+            }
+
+            if pending_cold == Some(true) {
+                let mut pending = self.pending_restored_tasks.write().await;
+                if !matches!(
+                    pending.get(&config.container_id),
+                    Some(PendingRestoredTask::ColdRootfs {
+                        state: ColdRestoreState::Applying
+                    })
+                ) {
+                    return Err(anyhow!("writable-rootfs restore task left applying state"));
+                }
+                containers.insert(container.container_id.to_string(), container);
+                pending.remove(&config.container_id);
+            } else {
+                containers.insert(container.container_id.to_string(), container);
+            }
+            Ok(PID {
+                pid: vmm_master_tid,
+            })
         }
-
-        containers.insert(container.container_id.to_string(), container);
-        Ok(PID {
-            pid: vmm_master_tid,
-        })
+        .await;
+        if let Err(ref error) = result {
+            if pending_cold == Some(true) {
+                if let Some(PendingRestoredTask::ColdRootfs { state }) = self
+                    .pending_restored_tasks
+                    .write()
+                    .await
+                    .get_mut(&config.container_id)
+                {
+                    state.fail(format!("{error:#}"));
+                }
+            }
+        }
+        result
     }
 
     #[instrument]
@@ -553,5 +655,46 @@ impl ContainerManager for VirtContainerManager {
     async fn is_sandbox_container(&self, process: &ContainerProcess) -> bool {
         process.process_type == ProcessType::Container
             && process.container_id.container_id == self.sid
+    }
+}
+
+#[cfg(test)]
+mod reconnect_mount_tests {
+    use super::*;
+    use std::path::Path;
+
+    fn spec_with_mount(destination: &str, options: Vec<&str>) -> oci::Spec {
+        let mut mount = oci::Mount::default();
+        mount.set_destination(Path::new(destination).to_path_buf());
+        mount.set_options(Some(options.into_iter().map(str::to_string).collect()));
+        let mut spec = oci::Spec::default();
+        spec.set_mounts(Some(vec![mount]));
+        spec
+    }
+
+    #[test]
+    fn reconnect_only_mount_options_are_canonicalized_and_checked() {
+        let mut directories = vec![ReconnectOnlyHostDirectory {
+            destination: "/data".to_string(),
+            readonly: false,
+            propagation: 0,
+            selinux_relabel: false,
+            recursive_read_only: false,
+            mount_options: Vec::new(),
+        }];
+        let spec = spec_with_mount("/data", vec!["nodev", "nosuid"]);
+
+        checkpoint_restore::record_reconnect_only_host_directory_mount_options(
+            &mut directories,
+            &spec,
+        )
+        .unwrap();
+        assert_eq!(directories[0].mount_options, vec!["nodev", "nosuid"]);
+        assert!(validate_reconnect_only_host_directory_mount_options(&directories, &spec).is_ok());
+
+        let changed = spec_with_mount("/data", vec!["nosuid"]);
+        assert!(
+            validate_reconnect_only_host_directory_mount_options(&directories, &changed).is_err()
+        );
     }
 }

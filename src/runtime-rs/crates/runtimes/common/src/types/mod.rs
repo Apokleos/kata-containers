@@ -23,6 +23,7 @@ use anyhow::{Context, Result};
 use kata_sys_util::validate;
 use kata_types::mount::Mount;
 use oci_spec::runtime as oci;
+use resource::rootfs::writable_snapshot::PreparedWritableRestore;
 use strum::Display;
 
 // DEFAULT_SHM_SIZE is the default shm size to be used in case host
@@ -197,6 +198,38 @@ pub struct SandboxCheckpointTask {
     // Resolved by the runtime container manager before tasks are frozen. This
     // is runtime-local metadata and is not part of the Sandbox API.
     pub rootfs_device_ids: Vec<String>,
+    pub rootfs_external_device_ids: Vec<String>,
+    // Resolved from the rootfs resource. Checkpoint planning must use this
+    // instead of treating an arbitrary rootfs device as the writable layer.
+    pub writable_layer: Option<resource::rootfs::WritableLayer>,
+    // Derived from the existing CRI container status for writable-rootfs fidelity.
+    pub base_image: Option<BaseImageIdentity>,
+    // Host paths are intentionally omitted: they are live restore-time inputs,
+    // not checkpoint state.
+    pub reconnect_only_host_directories: Vec<ReconnectOnlyHostDirectory>,
+    pub has_undeclared_mounts: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BaseImageIdentity {
+    /// Canonical digest from CRI ContainerStatus.ImageRef. Restore must use
+    /// the same digest-pinned image reference.
+    OciImage { digest: String },
+}
+
+/// Guest-visible CRI mount semantics for a host directory that is deliberately
+/// reconnected, rather than checkpointed, by writable-rootfs restore.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReconnectOnlyHostDirectory {
+    pub destination: String,
+    pub readonly: bool,
+    pub propagation: i32,
+    pub selinux_relabel: bool,
+    pub recursive_read_only: bool,
+    // OCI mount options affect guest-visible mount behavior. They are
+    // checkpoint metadata only; host paths and virtio-fs transport state are
+    // deliberately excluded.
+    pub mount_options: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -213,6 +246,10 @@ pub struct CheckpointSandboxRequest {
 pub struct SandboxRestoreTask {
     pub checkpoint_key: String,
     pub task_id: String,
+    pub base_image: Option<BaseImageIdentity>,
+    // Derived from the restore CRI container config.
+    pub reconnect_only_host_directories: Vec<ReconnectOnlyHostDirectory>,
+    pub has_undeclared_mounts: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -229,7 +266,18 @@ pub struct RestoreSandboxRequest {
 pub struct RestoredSandboxTask {
     pub checkpoint_key: String,
     pub task_id: String,
-    pub rootfs_device_ids: Vec<String>,
+    pub mode: RestoredTaskMode,
+}
+
+#[derive(Clone, Debug)]
+pub enum RestoredTaskMode {
+    FullVm {
+        rootfs_device_ids: Vec<String>,
+    },
+    ColdWritableRootfs {
+        prepared: PreparedWritableRestore,
+        reconnect_only_host_directories: Vec<ReconnectOnlyHostDirectory>,
+    },
 }
 
 #[derive(Clone, Debug)]

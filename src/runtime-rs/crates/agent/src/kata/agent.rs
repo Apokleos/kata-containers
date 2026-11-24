@@ -122,6 +122,7 @@ impl_agent!(
     stats_container | crate::ContainerID | crate::StatsContainerResponse | None,
     pause_container | crate::ContainerID | crate::Empty | None,
     resume_container | crate::ContainerID | crate::Empty | None,
+    sync_container_filesystems | crate::SyncContainerFilesystemsRequest | crate::Empty | None,
     write_stdin | crate::WriteStreamRequest | crate::WriteStreamResponse | Some(0),
     close_stdin | crate::CloseStdinRequest | crate::Empty | None,
     tty_win_resize | crate::TtyWinResizeRequest | crate::Empty | None,

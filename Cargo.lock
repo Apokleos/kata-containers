@@ -6128,6 +6128,7 @@ dependencies = [
  "serde_json",
  "slog",
  "slog-scope",
+ "tar",
  "tempfile",
  "test-utils",
  "tests_utils",
@@ -6135,6 +6136,7 @@ dependencies = [
  "tracing",
  "uuid 0.4.0",
  "walkdir",
+ "xattr 1.6.1",
 ]
 
 [[package]]

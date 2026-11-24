@@ -50,7 +50,9 @@ impl Container {
         Ok(true)
     }
 
-    pub async fn checkpoint_rootfs_ids(&self) -> Result<Vec<String>> {
+    pub async fn checkpoint_rootfs_info(
+        &self,
+    ) -> Result<(Vec<String>, Vec<String>, resource::rootfs::WritableLayer)> {
         let inner = self.inner.read().await;
         if !inner.exec_processes.is_empty() {
             return Err(anyhow!(
@@ -67,14 +69,11 @@ impl Container {
             ));
         }
 
-        let ids = inner.rootfs[0].get_device_ids().await?;
-        if ids.is_empty() || ids.iter().any(String::is_empty) {
-            return Err(anyhow!(
-                "container {} rootfs is not block-backed",
-                self.container_id
-            ));
-        }
-
-        Ok(ids)
+        let rootfs = &inner.rootfs[0];
+        Ok((
+            rootfs.get_device_ids().await?,
+            rootfs.external_device_ids(),
+            rootfs.writable_layer(),
+        ))
     }
 }

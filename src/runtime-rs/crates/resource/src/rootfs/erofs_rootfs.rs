@@ -12,7 +12,7 @@
 // The overlay mount may be handled by the guest agent if it contains "{{"
 // templates in upperdir/workdir.
 
-use super::{Rootfs, ROOTFS};
+use super::{Rootfs, WritableLayer, ROOTFS};
 use crate::{
     block_device::agent_storage_source_from_block_config,
     share_fs::{do_get_guest_path, do_get_host_path},
@@ -28,7 +28,7 @@ use hypervisor::{
     virtio_blk_modern::BlockSourceFormat,
     BlockConfigModern, BlockDeviceAio,
 };
-use kata_types::mount::Mount;
+use kata_types::mount::{implicit_erofs_upper_mount_path, Mount};
 use kata_types::{
     gpt_disk::{
         extract_dmverity_annotation, extract_snapshot_id, generate_dmverity_options,
@@ -41,7 +41,6 @@ use oci_spec::runtime as oci;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use tokio::sync::RwLock;
 
 /// EROFS rootfs type identifier
@@ -377,6 +376,7 @@ async fn extract_block_device_info(
 pub(crate) struct ErofsMultiLayerRootfs {
     guest_path: String,
     device_ids: Vec<String>,
+    writable_layer: WritableLayer,
     // Writable layer storage (upper layer), typically ext4 and optional when
     // the agent creates a /run-backed upper.
     rwlayer_storage: Option<Storage>,
@@ -396,7 +396,6 @@ impl ErofsMultiLayerRootfs {
         sid: &str,
         cid: &str,
         rootfs_mounts: &[Mount],
-        _share_fs: &Option<Arc<dyn crate::share_fs::ShareFs>>,
     ) -> Result<Self> {
         let container_path = do_get_guest_path(ROOTFS, cid, false, false);
         let host_path = do_get_host_path(ROOTFS, sid, cid, false, false);
@@ -405,6 +404,7 @@ impl ErofsMultiLayerRootfs {
             .map_err(|e| anyhow!("failed to create rootfs dir {}: {:?}", host_path, e))?;
 
         let mut device_ids = Vec::new();
+        let mut rwlayer_device_id: Option<String> = None;
         let mut rwlayer_storage: Option<Storage> = None;
         let mut erofs_storages: Vec<Storage> = Vec::new();
         let mut cleanup_paths: Vec<PathBuf> = Vec::new();
@@ -506,6 +506,7 @@ impl ErofsMultiLayerRootfs {
                     rwlayer.options = options;
 
                     rwlayer_storage = Some(rwlayer);
+                    rwlayer_device_id = Some(device_id.clone());
                     device_ids.push(device_id);
                 }
                 fmt if fmt.eq_ignore_ascii_case(EROFS_ROOTFS_TYPE) => {
@@ -877,9 +878,24 @@ impl ErofsMultiLayerRootfs {
             erofs.options.extend(mkdir_options);
         }
 
+        let writable_layer = match rwlayer_device_id {
+            Some(device_id) => WritableLayer::ExternalBlock {
+                device_id,
+                fs_type: Some(RW_LAYER_ROOTFS_TYPE.to_string()),
+            },
+            None => {
+                let upper_mount = implicit_erofs_upper_mount_path(cid);
+                WritableLayer::GuestTmpfs {
+                    upperdir: upper_mount.join("upper"),
+                    workdir: upper_mount.join("work"),
+                }
+            }
+        };
+
         Ok(Self {
             guest_path: container_path,
             device_ids,
+            writable_layer,
             rwlayer_storage,
             erofs_storages,
             cleanup_paths,
@@ -894,6 +910,14 @@ impl ErofsMultiLayerRootfs {
 
 #[async_trait]
 impl Rootfs for ErofsMultiLayerRootfs {
+    fn writable_layer(&self) -> WritableLayer {
+        self.writable_layer.clone()
+    }
+
+    fn external_device_ids(&self) -> Vec<String> {
+        self.device_ids.clone()
+    }
+
     async fn get_guest_rootfs_path(&self) -> Result<String> {
         Ok(self.guest_path.clone())
     }

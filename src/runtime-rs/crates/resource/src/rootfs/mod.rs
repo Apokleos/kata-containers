@@ -5,7 +5,10 @@
 //
 
 mod nydus_rootfs;
+mod overlay_layout;
 mod share_fs_rootfs;
+mod writable_layer;
+pub mod writable_snapshot;
 use agent::Storage;
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
@@ -28,6 +31,8 @@ use self::{
 use crate::rootfs::erofs_rootfs::is_erofs_multi_layer;
 use crate::share_fs::{NydusShareFs, ShareFs};
 use oci_spec::runtime as oci;
+pub use overlay_layout::OverlayRootfsLayout;
+pub use writable_layer::WritableLayer;
 
 const ROOTFS: &str = "rootfs";
 pub const HYBRID_ROOTFS_LOWER_DIR: &str = "rootfs_lower";
@@ -35,6 +40,8 @@ const TYPE_OVERLAY_FS: &str = "overlay";
 
 #[async_trait]
 pub trait Rootfs: Send + Sync {
+    fn writable_layer(&self) -> WritableLayer;
+    fn external_device_ids(&self) -> Vec<String>;
     async fn get_guest_rootfs_path(&self) -> Result<String>;
     async fn get_rootfs_mount(&self) -> Result<Vec<oci::Mount>>;
     async fn get_storage(&self) -> Option<Vec<Storage>>;
@@ -105,7 +112,7 @@ impl RootFsResource {
                 );
 
                 let multi_layer =
-                    ErofsMultiLayerRootfs::new(device_manager, sid, cid, rootfs_mounts, share_fs)
+                    ErofsMultiLayerRootfs::new(device_manager, sid, cid, rootfs_mounts)
                         .await
                         .context("new multi-layer erofs rootfs")?;
 

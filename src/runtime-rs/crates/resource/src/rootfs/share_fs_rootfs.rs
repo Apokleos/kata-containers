@@ -4,9 +4,9 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
-use super::{Rootfs, ROOTFS};
+use super::{OverlayRootfsLayout, Rootfs, WritableLayer, ROOTFS};
 use crate::share_fs::{ShareFs, ShareFsRootfsConfig};
 use agent::Storage;
 use anyhow::{Context, Result};
@@ -22,6 +22,45 @@ pub(crate) struct ShareFsRootfs {
     share_fs: Arc<dyn ShareFs>,
     config: ShareFsRootfsConfig,
     mounted_bundle_rootfs: bool,
+    writable_layer: WritableLayer,
+}
+
+fn classify_writable_layer(rootfs: Option<&Mount>) -> Result<WritableLayer> {
+    let Some(rootfs) = rootfs else {
+        return Ok(WritableLayer::Unknown {
+            reason: "shared rootfs mount contract is unavailable".to_string(),
+        });
+    };
+
+    if rootfs.options.iter().any(|option| option == "ro") {
+        return Ok(WritableLayer::ReadOnly);
+    }
+
+    if rootfs.fs_type == "overlay" {
+        let layout = OverlayRootfsLayout::parse(rootfs)?;
+        return Ok(WritableLayer::HostDirectory {
+            upperdir: layout.upperdir,
+            workdir: layout.workdir,
+            lowerdirs: layout.lowerdirs,
+        });
+    }
+
+    let source = PathBuf::from(&rootfs.source);
+    if source.is_absolute() {
+        Ok(WritableLayer::Unknown {
+            reason: format!(
+                "writable shared rootfs source {} is not an OverlayFS mount",
+                source.display()
+            ),
+        })
+    } else {
+        Ok(WritableLayer::Unknown {
+            reason: format!(
+                "writable shared rootfs source is relative: {}",
+                rootfs.source
+            ),
+        })
+    }
 }
 
 impl ShareFsRootfs {
@@ -31,6 +70,7 @@ impl ShareFsRootfs {
         bundle_path: &str,
         rootfs: Option<&Mount>,
     ) -> Result<Self> {
+        let writable_layer = classify_writable_layer(rootfs)?;
         let bundle_rootfs = if let Some(rootfs) = rootfs {
             let bundle_rootfs = format!("{bundle_path}/{ROOTFS}");
             rootfs.mount(&bundle_rootfs).context(format!(
@@ -61,12 +101,21 @@ impl ShareFsRootfs {
             share_fs: Arc::clone(share_fs),
             config,
             mounted_bundle_rootfs: rootfs.is_some(),
+            writable_layer,
         })
     }
 }
 
 #[async_trait]
 impl Rootfs for ShareFsRootfs {
+    fn writable_layer(&self) -> WritableLayer {
+        self.writable_layer.clone()
+    }
+
+    fn external_device_ids(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     async fn get_guest_rootfs_path(&self) -> Result<String> {
         Ok(self.guest_path.clone())
     }
@@ -164,5 +213,72 @@ mod tests {
         assert_eq!(fs::read(&sentinel).unwrap(), b"image data");
 
         rootfs.cleanup(&device_manager).await.unwrap();
+    }
+
+    fn mount(fs_type: &str, source: &str, options: &[&str]) -> Mount {
+        Mount {
+            fs_type: fs_type.to_string(),
+            source: source.to_string(),
+            options: options.iter().map(|option| option.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn classify_overlay_upper_and_work() {
+        let rootfs = mount(
+            "overlay",
+            "overlay",
+            &["lowerdir=/lower", "upperdir=/upper", "workdir=/work"],
+        );
+        assert_eq!(
+            classify_writable_layer(Some(&rootfs)).unwrap(),
+            WritableLayer::HostDirectory {
+                upperdir: PathBuf::from("/upper"),
+                workdir: PathBuf::from("/work"),
+                lowerdirs: vec![PathBuf::from("/lower")],
+            }
+        );
+    }
+
+    #[test]
+    fn reject_duplicate_or_relative_overlay_paths() {
+        let duplicate = mount(
+            "overlay",
+            "overlay",
+            &["upperdir=/one", "upperdir=/two", "workdir=/work"],
+        );
+        assert!(classify_writable_layer(Some(&duplicate)).is_err());
+
+        let relative = mount(
+            "overlay",
+            "overlay",
+            &["upperdir=relative", "workdir=/work"],
+        );
+        assert!(classify_writable_layer(Some(&relative)).is_err());
+    }
+
+    #[test]
+    fn classify_read_only_and_bind_mounts() {
+        let read_only = mount("bind", "/snapshot", &["bind", "ro"]);
+        assert_eq!(
+            classify_writable_layer(Some(&read_only)).unwrap(),
+            WritableLayer::ReadOnly
+        );
+
+        let writable = mount("bind", "/snapshot", &["bind", "rw"]);
+        assert!(matches!(
+            classify_writable_layer(Some(&writable)).unwrap(),
+            WritableLayer::Unknown { .. }
+        ));
+    }
+
+    #[test]
+    fn relative_bind_mount_is_unknown_without_blocking_create() {
+        let rootfs = mount("bind", "relative", &["bind", "rw"]);
+        assert!(matches!(
+            classify_writable_layer(Some(&rootfs)).unwrap(),
+            WritableLayer::Unknown { .. }
+        ));
     }
 }

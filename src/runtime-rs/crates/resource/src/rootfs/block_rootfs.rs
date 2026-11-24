@@ -4,7 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 
-use super::{Rootfs, ROOTFS};
+use super::{Rootfs, WritableLayer, ROOTFS};
 use crate::{
     block_device::agent_storage_source_from_block_config,
     share_fs::{do_get_guest_path, do_get_host_path},
@@ -32,6 +32,7 @@ const BLOCKFILE_ROOTFS_FLAG: &str = "loop";
 pub(crate) struct BlockRootfs {
     guest_path: String,
     device_id: String,
+    fs_type: Option<String>,
     mount: oci::Mount,
     storage: Option<agent::Storage>,
 }
@@ -109,6 +110,7 @@ impl BlockRootfs {
         Ok(Self {
             guest_path: container_path.clone(),
             device_id,
+            fs_type: (!rootfs.fs_type.is_empty()).then(|| rootfs.fs_type.clone()),
             mount: oci::Mount::default(),
             storage: Some(storage),
         })
@@ -117,6 +119,17 @@ impl BlockRootfs {
 
 #[async_trait]
 impl Rootfs for BlockRootfs {
+    fn writable_layer(&self) -> WritableLayer {
+        WritableLayer::ExternalBlock {
+            device_id: self.device_id.clone(),
+            fs_type: self.fs_type.clone(),
+        }
+    }
+
+    fn external_device_ids(&self) -> Vec<String> {
+        vec![self.device_id.clone()]
+    }
+
     async fn get_guest_rootfs_path(&self) -> Result<String> {
         Ok(self.guest_path.clone())
     }

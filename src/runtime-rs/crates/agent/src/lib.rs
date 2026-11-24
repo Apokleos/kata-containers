@@ -24,10 +24,10 @@ pub use types::{
     OomEventResponse, ReadStreamRequest, ReadStreamResponse, RebindSandboxRequest,
     RemoveContainerRequest, ReseedRandomDevRequest, ResizeVolumeRequest, Route, Routes,
     SetGuestDateTimeRequest, SetIPTablesRequest, SetIPTablesResponse, SignalProcessRequest,
-    StatsContainerResponse, Storage, TtyWinResizeRequest, UpdateContainerRequest,
-    UpdateInterfaceRequest, UpdateRoutesRequest, VersionCheckResponse, VolumeStatsRequest,
-    VolumeStatsResponse, WaitProcessRequest, WaitProcessResponse, WriteStreamRequest,
-    WriteStreamResponse,
+    StatsContainerResponse, Storage, SyncContainerFilesystemsRequest, TtyWinResizeRequest,
+    UpdateContainerRequest, UpdateInterfaceRequest, UpdateRoutesRequest, VersionCheckResponse,
+    VolumeStatsRequest, VolumeStatsResponse, WaitProcessRequest, WaitProcessResponse,
+    WriteStreamRequest, WriteStreamResponse,
 };
 
 use anyhow::Result;
@@ -90,6 +90,10 @@ pub trait Agent: AgentManager + HealthService + Send + Sync {
     async fn pause_container(&self, req: ContainerID) -> Result<Empty>;
     async fn remove_container(&self, req: RemoveContainerRequest) -> Result<Empty>;
     async fn resume_container(&self, req: ContainerID) -> Result<Empty>;
+    async fn sync_container_filesystems(
+        &self,
+        req: SyncContainerFilesystemsRequest,
+    ) -> Result<Empty>;
     async fn start_container(&self, req: ContainerID) -> Result<Empty>;
     async fn stats_container(&self, req: ContainerID) -> Result<StatsContainerResponse>;
     async fn update_container(&self, req: UpdateContainerRequest) -> Result<Empty>;

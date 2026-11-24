@@ -6,6 +6,7 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
+    time::Instant,
 };
 
 use anyhow::Result;
@@ -19,16 +20,20 @@ use common::{
 };
 
 use crate::sandbox::VirtSandbox;
+use resource::rootfs::writable_snapshot::PreparedWritableRestore;
 
 mod artifacts;
 mod checkpoint;
+mod cold_rootfs;
 mod identity;
 mod manifest;
 mod restore;
 mod sparse;
 mod validation;
 
-use manifest::{CheckpointManifest, WORKLOAD_CHECKPOINT_MANIFEST, WORKLOAD_CHECKPOINT_STATE};
+use manifest::{
+    CheckpointManifest, CheckpointMode, WORKLOAD_CHECKPOINT_MANIFEST, WORKLOAD_CHECKPOINT_STATE,
+};
 use restore::RestoreBoot;
 pub(super) use validation::RestoreInventoryValidation;
 use validation::{CheckpointInventoryValidation, CheckpointRequestValidation};
@@ -67,6 +72,7 @@ pub(super) struct PendingRestore {
     checkpoint_path: String,
     options: HashMap<String, String>,
     manifest: CheckpointManifest,
+    writable_artifacts: HashMap<String, PreparedWritableRestore>,
 }
 
 #[derive(Default)]
@@ -87,6 +93,12 @@ impl RestoreState {
 
     pub(super) fn take_boot(&mut self) -> Option<RestoreBoot> {
         self.pending.as_mut()?.boot.take()
+    }
+
+    pub(super) fn is_cold_rootfs(&self) -> bool {
+        self.pending
+            .as_ref()
+            .is_some_and(|pending| pending.manifest.mode == CheckpointMode::ColdRootfs)
     }
 
     pub(super) fn set_artifact_dir(&mut self, path: PathBuf) {
@@ -116,6 +128,16 @@ impl RestoreState {
     }
 }
 
+fn ensure_artifact_deadline(deadline: Option<Instant>, operation: &str) -> Result<()> {
+    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+        return Err(CommonError::SandboxOperationDeadline(format!(
+            "{operation} exceeded its deadline"
+        ))
+        .into());
+    }
+    Ok(())
+}
+
 #[async_trait]
 impl SandboxCheckpointRestore for VirtSandbox {
     async fn prepare_restore_sandbox(&self, options: &PrepareRestoreOptions) -> Result<()> {
@@ -123,6 +145,9 @@ impl SandboxCheckpointRestore for VirtSandbox {
     }
 
     async fn validate_checkpoint_sandbox(&self, req: &CheckpointSandboxRequest) -> Result<()> {
+        if cold_rootfs::checkpoint_is_cold(&req.options)? {
+            return self.validate_cold_rootfs_checkpoint(req).await;
+        }
         CheckpointRequestValidation {
             sandbox_id: &self.sid,
             request: req,
@@ -145,7 +170,11 @@ impl SandboxCheckpointRestore for VirtSandbox {
         req: &CheckpointSandboxRequest,
         owns_output: &mut bool,
     ) -> Result<()> {
-        self.checkpoint_workload(req, owns_output).await
+        if cold_rootfs::checkpoint_is_cold(&req.options)? {
+            self.checkpoint_cold_rootfs(req, owns_output).await
+        } else {
+            self.checkpoint_workload(req, owns_output).await
+        }
     }
 
     async fn cleanup_sandbox_checkpoint(&self, req: &CheckpointSandboxRequest) -> Result<()> {

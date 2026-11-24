@@ -226,9 +226,9 @@ protobuf = "3.7.2"
 rand = "0.10.1"
 regex = "1.10.5"
 rlimit = "0.7.0"
+ring = "0.17.14"
 rstest = "0.26.1"
 rtnetlink = "0.23.0"
-ring = "0.17.14"
 scan_fmt = "0.2.6"
 scopeguard = "1.0.0"
 semver = "1.0"
@@ -246,7 +246,7 @@ slog-term = "2.9.0"
 strum = { features = ["derive"], version = "0.24.0" }
 strum_macros = "0.26.2"
 sysinfo = "0.39.5"
-tar = "0.4.46"
+tar = { features = ["xattr"], version = "0.4.46" }
 tdx = "0.1.1"
 tempfile = "3.19.1"
 thiserror = "2.0.18"
@@ -263,6 +263,7 @@ ttrpc = "0.10.0"
 url = "2.5.4"
 vhost-rs = { package = "vhost", version = "0.15.0" }
 which = "4.3.0"
+xattr = "1.6.1"
 
 # Per-package release profile overrides for kata-deploy. The kata-deploy
 # binary runs once at pod start and then idles waiting for SIGTERM, so we
